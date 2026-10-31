@@ -1,0 +1,4 @@
+# AWS sandbox credentials: secret, never commit
+lab-credentials.ini
+
+.DS_Store
