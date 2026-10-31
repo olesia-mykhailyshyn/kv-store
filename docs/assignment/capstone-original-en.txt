@@ -1,0 +1,181 @@
+Cloud Architectures · 2026/27
+Capstone: milestones, requirements, control questions
+This is a capstone project for the Cloud Architectures course divided in 5 milestones. You will create a “light” version of a serverless key-value store like DynamoDB. Cool.
+How this works
+We grade skills, not works. Each milestone is an opportunity to demonstrate skills from the list in the syllabus. A skill counts once; if you miss one in M2, you can still demonstrate it in M5. The overlap is deliberate.
+Spec before code. An OpenSpec change proposal and an ADR for every significant decision come before implementation. Generating code with AI is allowed; writing the spec afterwards to legitimise it is not — that is academic integrity, not style.
+Deadlines are separate from skills. A late defense costs points on its own penalty scale, but never removes a skill you have already demonstrated.
+Environment. All AWS work runs in the AWS Academy sandbox — no personal accounts, no credit cards. Kubernetes, where needed, runs locally. You can boot most of this system locally via docker compose, but it’s strongly advised to use the cloud provider.
+Defense format
+Every milestone is defended orally and has three parts:
+	•	ADR walkthrough. We go through your decisions: why this way, which alternatives you rejected, and where in the code that decision actually lives.
+	•	Implementation walkthrough. The tutor picks a part of the system — you show it and explain it. Without notes.
+	•	AI design review. You bring an AI critique of your architecture and either accept or refute 2–3 of its points, with arguments.
+“The AI wrote that part” is an admission, not an explanation.
+Applies to every milestone
+	•	OpenSpec change proposal, created BEFORE the code
+	•	An ADR per significant decision (the mandatory ones are listed per milestone)
+	•	Working code in the repository + a demo
+	•	README: how to bring it up, how to verify it, what changed since the previous milestone
+	•	Transcript of the AI critique of your architecture
+Milestone 1 — Infrastructure setup
+This lab is dedicated to setting up infra for your future project. Everything runs in the AWS Academy sandbox, so you will not be creating your own account, organisation or IAM users — instead you will work inside the permissions you are given, and describe in code the things the sandbox will not let you attach.
+Tasks
+	•	Dissect the LabRole. Write down what it allows, what it denies, and — most importantly — how you found out (console, CLI, policy simulator).
+	•	Create an IAM policy that allows ONLY to view resources (no write access). In the sandbox you cannot attach it, so deliver it as an IaC template and explain what it would do.
+	•	Create a Role that has this policy attached and could be assumed by another principal. Same rule: describe it in IaC, explain why the sandbox refuses it.
+	•	Create a network (VPC for your resources). There should be private and public subnets. Public one has IGW, private ones are for internal access only.
+	•	Create an IaC stack holding your network resources.
+	•	Review the service quotas you will need in milestone 2. Write down the ones that can limit you.
+	•	Calculate the monthly budget for milestone 2, assuming there will be only 2 shards, and compare it against your sandbox credit ceiling.
+	•	Prove recreatability: tear the whole stack down and bring it back from IaC alone. Record how long it took and what broke on the first attempt.
+Mandatory ADRs
+Choice of IaC tool; stack layout (one stack, or network separate from application); CIDR addressing scheme.
+Control questions
+	•	*aaS. Compare cloud models. When to use which.
+	•	Regions, Availability Zones, etc.
+	•	Define IaC and its value.
+	•	Difference between using roles and user groups for assigning policies to the users.
+	•	VPC. CIDR, block calculations.
+	•	How to arrange public and private subnets. How does it work.
+	•	When to use allow and deny policies.
+	•	What does the LabRole allow and what does it deny? How did you find out?
+	•	Change sets and drift detection: what does each of them show you, and when do you need which?
+Skills: ★SEC-1, SEC-2, ★NET-1, ★INF-1, CF-2, ★PRO-1, PRO-2
+Milestone 2 — Sharding the load
+This lab is dedicated to the concept of horizontal sharding. You will implement a router service and a consistent hashing ring.
+Tasks
+	•	Create an API specification (OpenAPI REST, GraphQL, gRPC, anything u want) for registering a table definition and CRUD over table records. (Optional) Make a compound primary key: partition key + sort key.
+	•	Implement the “Coordinator” node which will support this API in single-node mode. Required operations (u can add more depending on your idea): EXISTS — checks if value for key is present; CREATE — put a key-value pair; DELETE — remove value for key; READ.
+	•	Shard writes. Coordinator calculates hash and based on it selects one of downstream shards. Shards are registered in the coordinator upon start (API needs to be added). Use consistent hashing or similar algorithms for dynamic updates.
+	•	Shard reads.
+	•	Define your infra with IaC.
+	•	Set up CI/CD: a pipeline that deploys infra updates (via IaC) and app updates. This is where your pipeline starts — it will carry you through the remaining milestones.
+	•	Benchmark the sharded store with YCSB and keep the numbers. This is the baseline you will compare against in M3 and M5.
+Mandatory ADRs
+API protocol and format; hash function and number of virtual nodes; partition key strategy.
+Control questions
+	•	What types of scalability do you know? When to use which.
+	•	Types of sharding + use cases.
+	•	Consistent hashing algorithm.
+	•	How does a HashMap work?
+	•	Why do we need partition and sort keys?
+	•	Linearization and serialization in the context of data consistency across the system.
+	•	Is your coordinator a bottleneck? How would you scale it?
+	•	Which YCSB workload did you choose, and why is it representative for a key-value store?
+Skills: DS-1, ★DS-2, DS-6, INF-2, ★PRO-1, PRO-2
+Milestone 3 — Adding durability with replication
+In this lab we expand on our previous lab by adding durability to our shards with replication. Each shard should have 3+ replicas. It is suggested to implement leader-based replication for simplicity, though the brave enough can experiment with a leaderless cluster. Note that conflict resolution is for the next lab, here we keep things simple.
+Tasks
+	•	Implement a replica set per each shard.
+	•	Leader node receives writes and event-sources (fan-out) them with some log structure (Kafka, RabbitMQ, physical file on S3, etc). Think about delivery order and versions.
+	•	Read replicas (followers) consume the log. Note that they should be used not only for durability, but also for load distribution — read load should be evenly balanced, so the controller should resolve reads to all 3+ active shards. Followers should track offset and upon restart resync only the relevant log range.
+	•	Implement quorum reads with the R + W > N rule, where N is the total replicas for a key (replication factor), W is the number of replicas that must durably ack a write before it “commits”, and R is the number of replicas a read queries; the coordinator returns the newest version among them. W = 1 for single-leader, > 1 for leaderless.
+	•	(Optional) Detect divergence between replicas without walking the whole log — Merkle trees or an equivalent anti-entropy mechanism.
+	•	Benchmark your solution with YCSB and compare against your M2 baseline.
+Mandatory ADRs
+Values of N / W / R; replica synchronisation mechanism; log structure and ordering guarantees.
+Control questions
+	•	Benefits of replicating partitions (shards). Drawbacks as well.
+	•	Explain R/W quorum math and why R + W > N yields consistent reads.
+	•	Compare leader-based vs leaderless replication; when would you prefer each?
+	•	What’s the role of an append-only event log?
+	•	How do write-ack strategies (sync vs async followers) affect tail latency and durability?
+	•	What failure modes lead to temporary inconsistency? How does your design bound staleness?
+	•	When does your system behave as CP, and when as AP? Give a concrete scenario.
+	•	How did p99 change after replication, and why exactly?
+Skills: ★DS-3, ★DS-4, DS-6, DS-7, ★PRO-1, PRO-2
+Milestone 4 — Monitoring and handling failures
+This lab is dedicated to monitoring your system and handling failures. And most importantly — recovering after those failures. You will set up an observability stack, implement conflict resolution for eventual consistency, learn to respond to node failures, and open your store to AI agents over MCP.
+1. Monitoring setup
+	•	Set up metrics collection (Prometheus / CloudWatch / Datadog / Sentry): latency (p50, p95, p99), throughput, error rate for coordinator and shards. Free Datadog and Sentry with your university mail: education.github.com/pack
+	•	Add structured logging with trace IDs to track requests through the system.
+	•	Create a dashboard with key metrics: cluster health, replication lag, shard distribution.
+	•	Set up alerting for critical events: node down, high latency (p99 > threshold), replication lag > N seconds.
+2. Conflict resolution
+	•	Implement versioning for records (vector clocks or timestamps).
+	•	Implement a Last-Write-Wins (LWW) conflict resolution strategy.
+	•	(Optional) Add an alternative strategy: a custom merge function or client-side conflict resolution.
+3. MCP server — required
+	•	Expose your store to AI agents through an MCP server: EXISTS / CREATE / READ / DELETE as tools, with proper schemas and error handling.
+	•	Verify it with any MCP client (Claude, Q CLI, n8n) and demonstrate this at the defense.
+	•	Decide and document what an agent may and may not do through this interface, and how it is authorised.
+4. Operational automation — optional
+	•	Automated incident response: a workflow that listens to your alerting system, creates incident tickets (Slack / Jira / etc), and enriches alerts with context — which shard failed, current load, recent deployments.
+	•	Operational automation: periodic backups (export data snapshots to S3/GCS), cleanup of old versions based on TTL or retention policy, daily health reports with key metrics.
+Mandatory ADRs
+Which metrics you collect and why those; SLO values; the boundaries of what the agent may do through MCP.
+Control questions
+	•	Which metrics do you collect, and which of them are SLIs? Why not all of them?
+	•	State an SLO for your store. Where did those particular numbers come from?
+	•	How do you detect a node failure, and how long does detection take?
+	•	Vector clocks vs timestamps for versioning — what did you choose and what did you give up?
+	•	Which tools did you expose over MCP, and which did you deliberately not expose?
+	•	How is the agent authorised? Can it delete data? Justify the answer.
+	•	What happens if prompt injection ends up in the data your store holds and an agent reads it?
+	•	Logs, metrics, traces: which of these do you have, and what is missing for investigating a real incident?
+Skills: DS-5, ★OBS-1, OBS-2, ★AGT-2, SEC-4, ★PRO-1, PRO-2
+Milestone 5 — Preparing for production
+This lab focuses on making your system production-ready by adding autoscaling and shard rebalancing capabilities. Most of the heavy lifting is already done in milestones 1–4, so this is about tying it together.
+1. Autoscaling based on metrics
+	•	Configure autoscaling policies for your shards based on metrics from milestone 4. Scale up when p99 latency exceeds a threshold — not on CPU. Scale down when metrics stay below the threshold for N minutes.
+	•	Test scaling behaviour: generate load to trigger scale-up, verify new nodes join and start handling traffic.
+2. Shard rebalancing
+	•	Implement shard addition: when a new shard joins, the coordinator should add it to the consistent hashing ring.
+	•	Data migration: implement a background job to move keys to the new shard based on hash ring changes. Only migrate keys that now belong to a different shard, and keep the old shard serving reads until migration completes.
+	•	Verify rebalancing: show that data distribution becomes more even after adding or removing shards. Use metrics from the milestone 4 dashboard and document before/after shard sizes.
+3. Ops agent — required
+	•	Build an agent that consumes your alerts and metrics and proposes an action — rebalance, scale up, scale down — with the reasoning behind it.
+	•	(Bonus) Close the loop: let the agent execute its proposal behind a human approval gate.
+4. Health checks and final report
+	•	Add actuator endpoints (e.g. /health) to coordinator and shards, plus an endpoint returning the build version.
+	•	Run the YCSB benchmark with autoscaling enabled. Document how the system responds to gradual load increase, a sudden spike, and sustained high load. Show latency, throughput and number of active nodes over time.
+Mandatory ADRs
+Scaling metric and thresholds; rebalancing algorithm; the limits of the ops agent’s autonomy.
+Control questions
+	•	What metrics are best for autoscaling stateful vs stateless services?
+	•	Explain the challenges of rebalancing data in a distributed system. How do you minimise impact?
+	•	How does consistent hashing minimise data movement during rebalancing?
+	•	What’s the difference between horizontal and vertical autoscaling? When to use each?
+	•	What are the risks of aggressive scale-down policies?
+	•	How do you ensure zero downtime during shard addition/removal?
+	•	What actions does your ops agent propose, and why does execution sit behind human approval?
+	•	Compare your final benchmark against the M2 baseline. Where did you win, and where did you lose?
+Skills: DS-5, RUN-5, AGT-4, AGT-5, ★CF-3, ★PRO-1, PRO-2
+Bonus tasks
+Can be taken any time after the milestone they build on. 5 points each, on top of the main scale.
+#
+Topic
+Synopsis
+Skill
+1
+API throttling
+Setting usage quota per client. Server-side and client-side limiting; leaking bucket, token bucket, fixed and sliding window. For extra credit — per-client quotas and a client that stays within quota while horizontally scaled.
+ADV-1
+2
+Agentic analyst over your data
+We need more AI to please God. An agent that answers questions about the data in your store through the MCP server from M4 — and shows where each answer came from.
+ADV-3
+3
+Adding a caching layer for quick responses
+Implementing poor man’s DAX. Invalidation, TTL, measured gain — and an honest answer about when the cache hurts.
+ADV-2
+Late defense penalties
+Penalties are subtracted from the final grade and never exceed 15 points in total. They do not remove skills you have already demonstrated.
+Delay
+Penalty
+On time
+0
+1 week
+−1 per milestone
+2 weeks
+−3 per milestone
+3 weeks
+−4 per milestone
+4+ weeks
+−5 per milestone
+After week 9, only one late defense per week is accepted.
+Passing rules
+	•	60 points in total
+	•	all 10 core skills (★) demonstrated
+	•	all five milestones defended
