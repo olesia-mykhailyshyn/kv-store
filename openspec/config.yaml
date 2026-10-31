@@ -1,0 +1,62 @@
+schema: spec-driven
+
+context: |
+  Language: Ukrainian
+  All artifacts must be written in Ukrainian.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  Проєкт:
+  - Капстоун курсу KSE SE470 Cloud Architectures (2026/27): «light» serverless
+    key-value сховище на кшталт DynamoDB.
+  - 5 майлстоунів, кожен = окрема OpenSpec-зміна: M1 інфраструктура (IAM, VPC),
+    M2 шардування (coordinator, consistent hashing, CI/CD, YCSB), M3 реплікація
+    (leader + log, кворуми R+W>N), M4 моніторинг, LWW, MCP-сервер,
+    M5 автомасштабування, ребалансування, ops-агент.
+  - Повне завдання: docs/assignment/capstone-original-en.txt (оригінал, головний)
+    і docs/assignment/capstone-uk.md (переклад).
+
+  Середовище:
+  - Лише AWS Academy Cloud Architecting Sandbox (не особистий акаунт).
+    Сесії ~3 год; бюджет $20 на весь курс; ресурси між сесіями зберігаються,
+    тимчасові ключі доступу міняються щосесії.
+  - Працюємо під роллю voclabs (ролі LabRole в цій пісочниці нема).
+  - Профіль AWS CLI: kse-lab, регіон us-east-1.
+  - За умовою завдання пісочниця не дає створювати/приєднувати IAM-політики
+    й ролі: такі ресурси описуються в IaC і пояснюються, але не деплояться.
+  - Kubernetes, якщо знадобиться, лише локально.
+
+  Ухвалені рішення:
+  - IaC: AWS CloudFormation, шаблони YAML (docs/adr/0001-iac-tool-cloudformation.md).
+
+  Правила роботи:
+  - Spec before code: OpenSpec proposal і ADR пишуться ДО коду.
+  - Кожне значуще рішення = ADR у docs/adr/NNNN-<назва>.md
+    (Context, Options, Decision, Consequences, «Де це в коді»).
+  - Кожен крок, команда і пояснення логуються в docs/m<N>/journal-uk.md.
+  - Ключі доступу ніколи не потрапляють у git (lab-credentials.ini у .gitignore);
+    репо публічне.
+  - Кожен майлстоун також здає: робочий код + демо, README (як підняти, як
+    перевірити, що змінилось), транскрипт AI-критики архітектури.
+  - Зважати на вартість: кожен ресурс оцінювати проти бюджету $20.
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
