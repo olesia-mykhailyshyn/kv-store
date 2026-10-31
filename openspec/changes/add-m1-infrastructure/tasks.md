@@ -11,17 +11,17 @@
 
 ## 2. Зафіксувати план у git до коду
 
-- [ ] 2.1 `openspec validate add-m1-infrastructure --strict` проходить; лише з дозволу Олесі — перший коміт (proposal, specs, design, tasks, ADR, журнал) і push; перевірка: `git log` показує коміт специфікації, `git check-ignore -v lab-credentials.ini` підтверджує, що ключі не в коміті
+- [x] 2.1 `openspec validate add-m1-infrastructure --strict` проходить; лише з дозволу Олесі — перший коміт (proposal, specs, design, tasks, ADR, журнал) і push; перевірка: `git log` показує коміт специфікації, `git check-ignore -v lab-credentials.ini` підтверджує, що ключі не в коміті
 
 ## 3. Розбір ролі пісочниці (завдання 1, разом)
 
-- [ ] 3.1 Записати перелік дозволеного з Readme пісочниці в `docs/m1/role-dissection.md`; перевірка: розділ «Readme» з переліком сервісів і обмежень
-- [ ] 3.2 `aws sts get-caller-identity --profile kse-lab` — хто ми; перевірка: ARN сесії ролі записаний (без ID ключів)
-- [ ] 3.3 Спробувати прочитати політики своєї ролі (`aws iam get-role`, `list-attached-role-policies`, `list-role-policies`, `get-role-policy`); перевірка: у документі або statement'и політики, або точний текст `AccessDenied`
-- [ ] 3.4 Перевірити, чи доступні `aws iam simulate-principal-policy` і `simulate-custom-policy`; перевірка: результат або точна помилка в документі (визначає метод для групи 5)
-- [ ] 3.5 Проби дій: читання (`ec2 describe-vpcs`), `--dry-run` для EC2, безпечна спроба `iam create-role`, яка має дати `AccessDenied`; перевірка: для кожної — команда і результат
-- [ ] 3.6 Знайти готові ролі пісочниці (`LabRole`, `LabInstanceProfile` тощо); перевірка: список або доказ, що їх нема — записано як вхід для M2
-- [ ] 3.7 Підсумок у `docs/m1/role-dissection.md`: таблиця «дозволено / заборонено / як з'ясували»; перевірка: Олеся може пояснити кожен рядок без нотаток (контрольне питання 8)
+- [x] 3.1 Записати перелік дозволеного з Readme пісочниці в `docs/m1/role-dissection.md`; перевірка: розділ «Readme» з переліком сервісів і обмежень
+- [x] 3.2 `aws sts get-caller-identity --profile kse-lab` — хто ми; перевірка: ARN сесії ролі записаний (без ID ключів)
+- [x] 3.3 Спробувати прочитати політики своєї ролі (`aws iam get-role`, `list-attached-role-policies`, `list-role-policies`, `get-role-policy`); перевірка: у документі або statement'и політики, або точний текст `AccessDenied`
+- [x] 3.4 Перевірити, чи доступні `aws iam simulate-principal-policy` і `simulate-custom-policy`; перевірка: результат або точна помилка в документі (визначає метод для групи 5)
+- [x] 3.5 Проби дій: читання (`ec2 describe-vpcs`), `--dry-run` для EC2, безпечна спроба `iam create-role`, яка має дати `AccessDenied`; перевірка: для кожної — команда і результат
+- [x] 3.6 Знайти готові ролі пісочниці (`LabRole`, `LabInstanceProfile` тощо); перевірка: список або доказ, що їх нема — записано як вхід для M2
+- [x] 3.7 Підсумок у `docs/m1/role-dissection.md`: таблиця «дозволено / заборонено / як з'ясували»; перевірка: Олеся може пояснити кожен рядок без нотаток (контрольне питання 8)
 
 ## 4. Мережевий стек `kv-network` (завдання 4–5)
 
