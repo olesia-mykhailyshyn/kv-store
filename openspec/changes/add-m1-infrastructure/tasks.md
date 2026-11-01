@@ -39,11 +39,11 @@
 
 ## 5. IAM read-only (завдання 2–3)
 
-- [ ] 5.1 Написати `infra/iam-readonly.yaml` за ADR-004: параметр `TrustedAccountId`, `AWS::IAM::ManagedPolicy` (statement'и `ViewInfrastructure` Allow і `DenyDataAndSecrets` Deny), `AWS::IAM::Role` з trust policy (інший акаунт + MFA) і лише цією політикою; перевірка: `aws cloudformation validate-template` без помилок
-- [ ] 5.2 Перевірити політику симулятором (або резервним методом з 3.4) на всіх сценаріях spec `iam-readonly-access`: перегляд → `allowed`; запис, дані, секрети → не `allowed`; разом з політикою `s3:*` → `s3:GetObject` = `explicitDeny`; перевірка: таблиця «дія → результат» у `docs/m1/iam-readonly.md`
-- [ ] 5.3 Перевірити trust policy в шаблоні: principal — `arn:aws:iam::${TrustedAccountId}:root`, не `*`; умова `aws:MultiFactorAuthPresent = true`; перевірка: відповідні рядки шаблону процитовано в документі
-- [ ] 5.4 Одна навмисна спроба деплою стека `kv-iam`, щоб отримати реальну помилку пісочниці; потім `delete-stack`; перевірка: точний текст помилки з подій стека в документі, стека `kv-iam` більше нема
-- [ ] 5.5 Завершити `docs/m1/iam-readonly.md`: що дозволяла б політика, хто й навіщо брав би роль, чому пісочниця відмовляє (з доказом 5.4); перевірка: документ відповідає на контрольні питання 4 і 7
+- [x] 5.1 Написати `infra/iam-readonly.yaml` за ADR-004: параметр `TrustedAccountId`, `AWS::IAM::ManagedPolicy` (statement'и `ViewInfrastructure` Allow і `DenyDataAndSecrets` Deny), `AWS::IAM::Role` з trust policy (інший акаунт + MFA) і лише цією політикою; перевірка: `aws cloudformation validate-template` без помилок
+- [x] 5.2 Перевірити політику симулятором (або резервним методом з 3.4) на всіх сценаріях spec `iam-readonly-access`: перегляд → `allowed`; запис, дані, секрети → не `allowed`; разом з політикою `s3:*` → `s3:GetObject` = `explicitDeny`; перевірка: таблиця «дія → результат» у `docs/m1/iam-readonly.md`
+- [x] 5.3 Перевірити trust policy в шаблоні: principal — `arn:aws:iam::${TrustedAccountId}:root`, не `*`; умова `aws:MultiFactorAuthPresent = true`; перевірка: відповідні рядки шаблону процитовано в документі
+- [x] 5.4 Доказ, що пісочниця відмовляє створювати IAM — **без спроби деплою стека за рішенням Олесі** (результат відомий); натомість використано вже зібрані докази: проба `aws iam create-role` → `AccessDenied … because no identity-based policy allows the iam:CreateRole action` (role-dissection, розділ 6) і симулятор `iam:CreateRole`/`iam:CreatePolicy` = `implicitDeny` (розділ 5); перевірка: ці докази процитовано в `docs/m1/iam-readonly.md`
+- [x] 5.5 Завершити `docs/m1/iam-readonly.md`: що дозволяла б політика, хто й навіщо брав би роль, чому пісочниця відмовляє (з доказом 5.4); перевірка: документ відповідає на контрольні питання 4 і 7
 
 ## 6. Квоти для M2 (завдання 6)
 

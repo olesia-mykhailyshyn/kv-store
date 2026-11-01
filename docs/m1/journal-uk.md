@@ -2162,3 +2162,472 @@ SubnetId: !ImportValue kv-network-PrivateSubnetAId
 ## Крок 77. Рішення: живий тест мережі не робимо (2026-11-01)
 
 **Рішення (моє): варіант А** — поведінку мережі живим трафіком у M1 не тестуємо. Завдання вимагає **створити** мережу з публічними (IGW) і приватними (лише внутрішній доступ) підмережами — створено й перевірено на рівні налаштувань; контрольне питання 6 вимагає **пояснити**. Аргументи на захисті: у приватних route tables лише `local`; `MapPublicIpOnLaunch = False`; main route table без прив'язок і без IGW. Живий трафік природно перевіриться в **M2**, коли в мережу стануть сервіси. Записано в `tasks.md` (Workflow follow-up).
+
+## Крок 78. `infra/iam-readonly.yaml`, частина 1 — каркас і параметр `TrustedAccountId` (5.1) (2026-11-01)
+
+**План шаблону IAM:** 1) каркас + параметр; 2) політика `kv-readonly` (Allow перегляду + Deny на дані й секрети); 3) роль з trust policy (інший акаунт + MFA) + Outputs.
+
+**Код частини 1:**
+```yaml
+Parameters:
+  TrustedAccountId:
+    Type: String
+    Description: 12-digit ID of the auditor's AWS account that may assume the role
+    AllowedPattern: "^[0-9]{12}$"
+    ConstraintDescription: must be a 12-digit AWS account ID
+```
+**Новий розділ `Parameters`** — «**поля для заповнення**» в бланку: значення, які вводять **під час деплою**, а не вписують у шаблон. Так один шаблон підходить для будь-якого аудитора (ADR-004: ID аудитора — параметр, не hardcode).
+| Рядок | Що означає |
+|---|---|
+| `TrustedAccountId:` | назва поля; у шаблоні на нього посилаємось `!Ref TrustedAccountId` |
+| `Type: String` | тип — текст |
+| `Description` | підказка для людини, що вводить значення |
+| `AllowedPattern: "^[0-9]{12}$"` | **перевірка** (регулярний вираз): рівно 12 цифр. `^` — початок, `[0-9]` — цифра, `{12}` — рівно 12 разів, `$` — кінець |
+| `ConstraintDescription` | що показати, якщо значення не пройшло перевірку |
+Деплой зі значенням `abc` упаде ще до створення ресурсів — помилка ловиться рано.
+
+**`validate-template` → помилка (очікувано):** `Template format error: At least one Resources member must be defined.` — шаблон **без жодного ресурсу** недійсний (`Resources` обов'язковий; крок 52). Виправиться в частині 2, коли додамо політику.
+
+## Крок 79. Що саме дозволимо переглядати; хто такий аудитор; хто має доступ до системи; як працює симулятор (2026-11-01)
+
+### Що буде дозволено ПЕРЕГЛЯДАТИ (план statement'а `ViewInfrastructure`, остаточно — у частині 2)
+| Сервіс | Дії (Allow) | Що бачить аудитор |
+|---|---|---|
+| EC2 / VPC | `ec2:Describe*` | мережі, підмережі, route tables, IGW, сервери, security groups |
+| CloudFormation | `Describe*`, `List*`, `GetTemplate`, `GetTemplateSummary` | стеки, їх ресурси, події, шаблони, drift |
+| DynamoDB | `DescribeTable`, `ListTables`, `DescribeTimeToLive`, `DescribeContinuousBackups` | які таблиці є і як налаштовані |
+| S3 | `ListAllMyBuckets`, `GetBucketLocation`, `GetEncryptionConfiguration`, `GetBucketVersioning`, `GetBucketPublicAccessBlock`, `GetBucketPolicyStatus`, `GetBucketTagging` | які бакети є і чи захищені |
+| Lambda | `ListFunctions`, `GetFunctionConfiguration` | які функції є і їх налаштування (не код) |
+| CloudWatch | `cloudwatch:Describe*`, `cloudwatch:List*`, `GetMetricData`, `GetMetricStatistics`; `logs:DescribeLogGroups` | метрики, алерти, які групи логів є (не самі логи) |
+| ELB, Auto Scaling | `elasticloadbalancing:Describe*`, `autoscaling:Describe*` | балансувальники, групи масштабування (M2/M5) |
+| IAM | `ListRoles`, `ListPolicies`, `GetRole`, `GetPolicy`, `GetPolicyVersion`, `ListAttachedRolePolicies`, `ListRolePolicies`, `GetRolePolicy` | які ролі й політики є і що дозволяють |
+| Service Quotas | `servicequotas:Get*`, `servicequotas:List*` | ліміти акаунта |
+**Свідомо НЕ даємо `s3:ListBucket`** (список **імен** файлів у бакеті): у kv-сховищі **ключі самі є даними користувачів** (`user:42:email`) — побачити список ключів = побачити дані. Аналогічно `dynamodb:Scan/Query/GetItem` (записи). Плюс explicit Deny на них (запобіжник).
+
+### Хто такий «аудитор» і що таке «акаунт аудитора»
+**Аудитор** — людина чи компанія, що **перевіряє** нашу інфраструктуру ззовні (викладач, служба безпеки, зовнішня аудиторська фірма). **Акаунт аудитора** — **його власний, окремий** AWS-акаунт (не наш). Зі свого акаунта він бере нашу роль `kv-readonly` (cross-account) і бачить нашу систему «лише на перегляд». У нашому проєкті це **сценарій для вправи**: реального аудитора нема, тому ID акаунта — **параметр** `TrustedAccountId`.
+
+### Хто має (матиме) доступ до нашого акаунта, з якими ролями й політиками
+| Хто | Як заходить | Роль | Політики | Коли |
+|---|---|---|---|---|
+| **Я** | Start Lab → тимчасові ключі | `voclabs` | `ReadOnlyAccess` + `Pvoclabs` (+ SCP над усім) | M1+ |
+| **Платформа AWS Academy (Vocareum)** | зі свого акаунта | `vocareum` | `AdministratorAccess` | завжди (керує акаунтом) |
+| **CloudFormation** | діє від мого імені | — (мої права) | права `voclabs` | M1+ |
+| **Аудитор** (вправа) | зі свого акаунта, з MFA | `kv-readonly` (наш шаблон, **не деплоїться**) | наша `kv-readonly`: Allow перегляд + Deny дані/секрети | лише на папері |
+| **Lambda-функції** | сервіс Lambda «вдягає» роль | `lambda-run-role` або `myBasicLambdaRole` (готові) | їхні політики (`lambda-execution-policy` / `AWSLambdaBasicRole`) | M2+ |
+| **EC2-сервери** | через instance profile | `myS3Role` (готова) | `AccessS3Bucket` | M2+, якщо обираємо сервери |
+| **GitHub Actions (CI/CD)** | ? (тимчасові ключі пісочниці) | — | права `voclabs` | M2 — вирішити, як дати доступ |
+| **Клієнти kv-сховища** | через **наш API**, не через AWS | **жодної IAM-ролі** | — | M2+ |
+
+### Роль vs політика — нагадування
+- **Політика** = **документ з правилами** «ЩО можна / не можна» (`Allow`/`Deny` + дії + ресурси). Сама нікого не має — її **прикріплюють**.
+- **Роль** = **«костюм»/ідентичність без пароля**: на неї чіпляють політики; її **беруть на час** (`sts:AssumeRole`) і отримують тимчасові ключі.
+- У ролі **два документи**: **trust policy** — ХТО може взяти; **permissions policy** — ЩО може, коли взяв.
+- **Аналогія:** політика = аркуш правил «куди пускати»; роль = картка/каска, до якої цей аркуш прикріплено; trust policy = список, кому видавати картку.
+
+### Як працює policy simulator
+1. Даємо йому **політику (JSON)** або **існуючу роль**, **дії** (`s3:GetObject`…), за потреби **ресурси** (ARN) і **контекст** (напр. `aws:MultiFactorAuthPresent=true`).
+2. Він проганяє **той самий алгоритм**, що й справжній AWS при запиті (крок 18): є explicit Deny → `explicitDeny`; інакше є Allow → `allowed`; інакше → `implicitDeny`.
+3. **Нічого не виконує і нічого не створює** — лише відповідає «що було б».
+Два види:
+- `simulate-custom-policy` — політика **ніде не прикріплена**, просто JSON → **наш випадок** (створити політику не можемо). Можна дати **кілька** політик разом — так перевіримо, що наш Deny перемагає чужий `s3:*` Allow.
+- `simulate-principal-policy` — права **існуючої** ролі (так розбирали `voclabs`, крок 47).
+Для шаблону: витягнемо JSON політики з YAML і подамо в `simulate-custom-policy` з діями зі сценаріїв spec. Trust policy (хто бере роль) перевіримо **читанням** шаблону (завдання 5.3) — для неї симулятор незручний.
+
+## Крок 80. Що в `iam-readonly.yaml` зараз; які «ресурси» мають бути; як перевірити те, що не деплоїться (2026-11-01)
+
+### Що це за файл
+**Бланк замовлення** (як `network.yaml`, крок 53) — але на **IAM**: «створіть політику "лише перегляд" і роль для аудитора». Різниця: цей бланк пісочниця **не виконає** (IAM створювати не можна) — тому ми його **пишемо і перевіряємо**, але не «будуємо». Це і є завдання 2–3: «deliver it as an IaC template and explain what it would do».
+
+**Зараз у файлі:**
+- `AWSTemplateFormatVersion` — «це бланк CloudFormation»;
+- `Description` — підпис: що це (політика «лише перегляд» + роль для аудитора з іншого акаунта з MFA), що в пісочниці не деплоїться і як перевіряється;
+- `Parameters` → `TrustedAccountId` — **поле для заповнення**: ID акаунта аудитора (12 цифр); вводиться під час деплою, а не вписується в код (крок 78).
+
+### Які «ресурси» мають бути в `Resources`
+**Ресурс** = річ, яку CloudFormation має **створити** в AWS (у мережі це були VPC, підмережі тощо). У цьому шаблоні їх буде **два**:
+| Ресурс | Тип | Що це |
+|---|---|---|
+| політика `kv-readonly` | `AWS::IAM::ManagedPolicy` | аркуш правил: Allow перегляд + Deny дані/секрети (частина 2) |
+| роль `kv-readonly` | `AWS::IAM::Role` | «картка» для аудитора: trust policy (хто бере) + прикріплена наша політика (частина 3) |
+Поки їх нема → `validate-template`: «At least one Resources member must be defined».
+
+### Якщо не деплоїться — як перевірити?
+Як **креслення будинку**: інженер перевіряє його **до** будівництва — без цегли. У нас 4 перевірки без створення ресурсів:
+| # | Перевірка | Що доводить |
+|---|---|---|
+| 1 | `validate-template` | шаблон правильно написаний, CloudFormation його розуміє |
+| 2 | **policy simulator** з JSON політики (`simulate-custom-policy`) | **логіка правил**: перегляд → `allowed`, запис/дані/секрети → ні; Deny перемагає чужий Allow |
+| 3 | **читання trust policy** в шаблоні | роль бере лише конкретний акаунт (не `*`) і лише з MFA |
+| 4 | **одна навмисна спроба деплою** → `AccessDenied` → видалити невдалий стек | **доказ**, що пісочниця відмовляє, і **чому** (точний текст помилки — для завдання 3) |
+Симулятор — як **льотний тренажер**: літак (політика) не злітає, але все, що він робив би, видно.
+
+## Крок 81. «Але ж ресурси вже створені?» — у кожного шаблону свої ресурси (2026-11-01)
+
+Створені — **мережеві** ресурси, і вони належать **іншому** шаблону/стеку. Кожен шаблон має **власний** розділ `Resources` (ADR-002: стеки окремо):
+| Шаблон | Стек | Його ресурси | Стан |
+|---|---|---|---|
+| `infra/network.yaml` | `kv-network` | VPC, IGW, 6 підмереж, 2 route tables, маршрут, 6 прив'язок (18) | ✅ **створені** в AWS |
+| `infra/iam-readonly.yaml` | `kv-iam` | **політика** `kv-readonly` + **роль** `kv-readonly` (2) | ❌ ще не описані; і **не будуть створені** (пісочниця не дає) |
+**Аналогія:** два **окремі замовлення**: (1) «збудувати будинок» — виконане; (2) «видати перепустки для аудитора» — пишемо зараз, і адміністрація (пісочниця) його відхилить. Друге замовлення має власний список того, що зробити, і він поки порожній.
+IAM-ресурси **не пов'язані** з мережею: політика й роль — про **доступ** до акаунта, а не про мережу; посилань на `kv-network` у них нема.
+
+## Крок 82. `iam-readonly.yaml`, частина 2 — політика `kv-readonly` (5.1) (2026-11-01)
+
+**Ресурс:** `ReadOnlyPolicy`, `Type: AWS::IAM::ManagedPolicy` — **керована політика** (окремий об'єкт, який можна прикріпити до ролі; крок 42).
+| Поле | Що означає |
+|---|---|
+| `ManagedPolicyName: kv-readonly` | назва політики в IAM |
+| `Description` | «бачити інфраструктуру й налаштування; ніколи — вміст даних і секрети» |
+| `PolicyDocument` | сам **документ політики** (той JSON, що в лекції 2, слайд 11), записаний у YAML |
+| `Version: "2012-10-17"` | версія **мови політик** IAM (завжди ця) |
+| `Statement:` | список **правил** |
+
+**Правило 1 — `ViewInfrastructure` (Allow):** 35 дій перегляду для сервісів проєкту — EC2/VPC, CloudFormation, DynamoDB (лише опис таблиць), S3 (список бакетів і їх налаштування), Lambda (список і конфігурація), CloudWatch (метрики, алерти), `logs:DescribeLogGroups`, ELB, Auto Scaling, IAM (ролі й політики), Service Quotas. `Resource: "*"` — для всіх ресурсів (більшість дій перегляду інакше й не працюють). Таблиця «що бачить аудитор» — крок 79.
+
+**Правило 2 — `DenyDataAndSecrets` (Deny):** 17 дій, що відкривають **вміст**:
+- S3: `s3:GetObject*` (файли), `s3:ListBucket*` (**імена** файлів — у kv-сховищі ключі = дані);
+- DynamoDB: `GetItem`, `BatchGetItem`, `Query`, `Scan`, `PartiQLSelect`, `GetRecords` (записи і потік змін);
+- секрети: `secretsmanager:GetSecretValue`, `kms:Decrypt`, `ssm:GetParameter(s/ByPath)`;
+- логи: `logs:GetLogEvents`, `logs:FilterLogEvents`, `logs:StartQuery` (у логах можуть бути дані);
+- `lambda:GetFunction` (дає посилання на **код** функції).
+Порівняно з ADR-004 список **розширено** (ListBucket, PartiQLSelect, GetRecords, FilterLogEvents, StartQuery) — ті самі «двері до даних», які знайшли, коли розписували перелік.
+
+**Коментарі в YAML** (`#`) пояснюють, навіщо Deny і чому закрито список ключів.
+
+**`validate-template` → OK**, і повідомив нове:
+```
+"Capabilities": ["CAPABILITY_NAMED_IAM"],
+"CapabilitiesReason": "The following resource(s) require capabilities: [AWS::IAM::ManagedPolicy]"
+```
+**Capabilities** — **явна згода**: шаблон створює IAM-ресурси **з власними назвами** (`kv-readonly`), тому при деплої треба додати `--capabilities CAPABILITY_NAMED_IAM` («так, я розумію, що цей шаблон змінює права доступу»). Захист від того, щоб чужий шаблон непомітно не створив адмін-роль.
+
+## Крок 83. Автоматична перевірка безпеки знайшла «дірки» в політиці — виправлено (5.1) (2026-11-01)
+
+**Що знайшла автоматична security-перевірка (рівень MEDIUM, «Overly Permissive IAM»):** деякі дії «перегляду» насправді **показують секрети**:
+- `lambda:GetFunctionConfiguration` повертає **змінні середовища** (environment variables) функції — туди часто кладуть паролі/ключі;
+- `ec2:Describe*` (з зірочкою) включає `ec2:DescribeInstanceAttribute` і `ec2:DescribeLaunchTemplateVersions` — вони повертають **user data** серверів (скрипт запуску, де теж бувають секрети).
+Тобто «Describe/Get» ≠ «безпечно» — та сама пастка, що з `Get*` (крок 30), тільки глибше.
+
+**Виправлення:**
+1. `ec2:Describe*` → **явний список** 16 потрібних дій (`DescribeVpcs`, `DescribeSubnets`, `DescribeRouteTables`, `DescribeInternetGateways`, `DescribeNatGateways`, `DescribeVpcEndpoints`, `DescribeNetworkAcls`, `DescribeSecurityGroups`, `DescribeSecurityGroupRules`, `DescribeNetworkInterfaces`, `DescribeAddresses`, `DescribeInstances`, `DescribeInstanceStatus`, `DescribeVolumes`, `DescribeTags`, `DescribeAvailabilityZones`). Least privilege: даємо лише те, що назвали, а не «усе, що починається з Describe».
+2. `lambda:GetFunctionConfiguration` прибрано з Allow і додано в **Deny**; туди ж — `ec2:DescribeInstanceAttribute`, `ec2:DescribeLaunchTemplateVersions` (коментар у шаблоні пояснює чому).
+3. `lambda:ListFunctions` лишили (без нього аудитор не побачить, які функції є). ⚠️ Але він **теж** повертає змінні середовища → **правило для M2+: жодних секретів у змінних середовища Lambda і в user data** — секрети лише в SSM Parameter Store як `SecureString` (SSM є в Readme; Secrets Manager — нема), а їх читання закрите Deny.
+
+**`validate-template` → OK** (`CAPABILITY_NAMED_IAM`).
+**Урок для захисту:** wildcard (`*`) у дозволах небезпечний навіть для «читання» — назва дії не гарантує, що вона не віддає секрети; треба знати, **що саме** повертає кожна дія.
+
+## Крок 84. Політика vs роль; що означають правила й зірочки; CAPABILITY_NAMED_IAM (2026-11-01)
+
+### Політика vs роль (на наших об'єктах)
+| | Політика `kv-readonly` | Роль `kv-readonly` (частина 3) |
+|---|---|---|
+| Що це | **документ з правилами**: ЩО можна / не можна | **ідентичність без пароля**, яку **беруть на час** |
+| Аналогія | аркуш «куди пускати» | картка-перепустка, до якої аркуш прикріплено |
+| Хто «використовує» | ніхто напряму — її **прикріплюють** | аудитор **бере** її (`sts:AssumeRole`) і отримує тимчасові ключі |
+| Що всередині | Statement'и: Allow / Deny + дії + ресурси | **trust policy** (хто може взяти) + список прикріплених політик |
+Без ролі політика — просто аркуш, що ні на кому не висить; без політики роль — порожня картка, що нічого не відчиняє.
+
+### Що означає блок `Statement`
+```yaml
+Statement:                       # список правил
+  - Sid: ViewInfrastructure      # назва правила (для людей)
+    Effect: Allow                # дозволити
+    Action: [ … ]                # які дії
+    Resource: "*"                # над якими ресурсами — над усіма
+  - Sid: DenyDataAndSecrets
+    Effect: Deny                 # заборонити (сильніше за будь-який Allow)
+    Action: [ … ]
+    Resource: "*"
+```
+Зараз: Allow — **49** дій, Deny — **21** дія.
+
+### Зірочки: два різні значення
+1. **У назві дії** (`cloudformation:Describe*`) — «**усі дії, що починаються** з Describe» (DescribeStacks, DescribeStackEvents, …).
+2. **У ресурсі** (`Resource: "*"`) — «**усі ресурси**» (усі стеки, усі VPC…).
+
+### Чи правильно мати зірочки?
+- **`Resource: "*"` в Allow — тут необхідно:** більшість дій перегляду (`ec2:DescribeVpcs`, `s3:ListAllMyBuckets`) **не підтримують** обмеження до конкретного ресурсу — працюють лише з `*`. І «аудитор бачить усю інфраструктуру» — саме те, що хочемо.
+- **`Resource: "*"` і зірочки в Deny — добре:** заборона ширша = безпечніше (`s3:GetObject*` закриває і `GetObject`, і `GetObjectAcl`, і `GetObjectVersion`…).
+- **Зірочки в діях Allow — ризиковано:** зірочка може захопити дію, яка віддає секрети (крок 83: `ec2:Describe*` → user data). Правило: **у Allow — зірочка лише якщо знаєш, які дії вона покриває**; інакше явний список.
+- **Перевірили решту зірочок в Allow** і знайшли ще одну пастку: `autoscaling:Describe*` включає **`DescribeLaunchConfigurations`**, який повертає **user data** → додали його в **Deny**. Інші (`cloudformation:Describe*/List*`, `cloudwatch:Describe*/List*`, `elasticloadbalancing:Describe*`, `servicequotas:Get*/List*`) повертають налаштування, метрики, ліміти — не вміст даних. Нюанс: `cloudformation:Describe*` показує **Outputs і параметри** стеків → правило «не класти секрети в Outputs; секретні параметри — лише з `NoEcho`».
+
+### CAPABILITY_NAMED_IAM
+**Явна згода** на деплой шаблону, що створює IAM-ресурси **з власними назвами**. Без прапорця `--capabilities CAPABILITY_NAMED_IAM` CloudFormation відмовить.
+- Два рівні: `CAPABILITY_IAM` — IAM-ресурси з **автоматичними** назвами; `CAPABILITY_NAMED_IAM` — з **нашими** назвами (у нас `kv-readonly`).
+- **Навіщо:** шаблон, що змінює **права доступу**, — небезпечний (міг би непомітно створити адмін-роль). Прапорець = «я прочитала шаблон і розумію, що він робить з доступом».
+- Наслідок власних назв: IAM-назви **унікальні в акаунті** → з цього шаблону можна створити лише **один** стек в акаунті.
+
+## Крок 85. Чи можна прибрати `Resource: "*"` і перелічити ресурси явно? (2026-11-01)
+
+**Для Deny — ні, і не треба:** `*` = «заборонено для **будь-якого** ресурсу». Якщо перелічити конкретні таблиці/бакети, то новий бакет у M2 опинився б **поза** забороною → запобіжник ослаб би. Для заборони ширше = безпечніше.
+
+**Для Allow — частково можна, але з ціною.** IAM-дії бувають двох типів:
+1. **Не підтримують конкретний ресурс** (у документації AWS «Resource types: —») — працюють **лише** з `"*"`: `ec2:DescribeVpcs`, `ec2:DescribeSubnets` та інші `ec2:Describe…`, `s3:ListAllMyBuckets`, `lambda:ListFunctions`, `dynamodb:ListTables`, `cloudwatch:ListMetrics`, `servicequotas:List…`, `iam:ListRoles`. Якщо замість `*` вписати ARN — дія просто **перестане працювати** (implicit deny).
+2. **Підтримують конкретний ресурс:** `dynamodb:DescribeTable` (ARN таблиці), `s3:GetEncryptionConfiguration` (ARN бакета), `cloudformation:DescribeStacks` (ARN стека), `iam:GetRole` (ARN ролі). Їх можна обмежити, напр., лише ресурсами з назвою `kv-*`.
+
+**Варіанти:**
+- **А. Лишити `"*"` в Allow** — просто, усі дії працюють; аудитор бачить усю інфраструктуру акаунта (цього й хочемо від аудиту). Захист даних тримає Deny.
+- **Б. Гібрид** — два Allow-statement'и: (1) дії типу 1 з `"*"`; (2) дії типу 2 лише на `kv-*` ресурси (`arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/kv-*` тощо). ➕ вужче; ➖ складніше, а з M2 **кожен** ресурс мусить мати назву `kv-…`, інакше аудитор його не побачить; ➖ бачитиме список таблиць (`ListTables`, тип 1), але не опис «чужих».
+**Рекомендація: А** — для аудитора «бачити все, нічого не читати з даних» — правильна межа; обмежувати треба **дані** (Deny), а не **видимість інфраструктури**.
+
+## Крок 86. Рішення: `Resource: "*"` лишаємо, з поясненням у коді (2026-11-01)
+
+**Рішення (моє): варіант А** — `Resource: "*"` в обох правилах. На моє прохання в шаблон додано **коментарі** з поясненням:
+- над Allow: `*` навмисно — більшість дій list/describe не підтримують обмеження до ресурсу і працюють лише з `*`; аудитор має бачити всю інфраструктуру, а дані закриває Deny;
+- над Deny: `*` навмисно — запобіжник має покривати й таблиці/бакети, створені пізніше (M2+).
+`validate-template` → OK.
+
+## Крок 87. `iam-readonly.yaml`, частина 3 — роль для аудитора; шаблон готовий (5.1 ✅) (2026-11-01)
+
+**Код:**
+```yaml
+  ReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: kv-readonly
+      Description: Assumed by an auditor from the trusted account (with MFA) ...
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:            # trust policy: ХТО може взяти
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AuditorFromAnotherAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${TrustedAccountId}:root
+            Action: sts:AssumeRole
+            Condition:
+              Bool:
+                aws:MultiFactorAuthPresent: "true"
+      ManagedPolicyArns:                    # permissions: ЩО може, коли взяв
+        - !Ref ReadOnlyPolicy
+Outputs:
+  ReadOnlyRoleArn:   { Value: !GetAtt ReadOnlyRole.Arn }
+  ReadOnlyPolicyArn: { Value: !Ref ReadOnlyPolicy }
+```
+| Рядок | Що означає |
+|---|---|
+| `Type: AWS::IAM::Role` | створити **роль** («картку-перепустку») |
+| `RoleName: kv-readonly` | назва ролі |
+| `MaxSessionDuration: 3600` | узята роль діє **макс. 1 год** — далі ключі «згорають», треба брати знову (менше часу = менше шкоди, якщо ключі вкрадуть) |
+| `AssumeRolePolicyDocument` | **trust policy** — ХТО може взяти роль |
+| `Principal: AWS: arn:aws:iam::${TrustedAccountId}:root` | **акаунт аудитора** як ціле (`:root` = «акаунт», не root-користувач); `${TrustedAccountId}` — значення з поля-параметра |
+| `Action: sts:AssumeRole` | дозволена дія — «взяти роль» |
+| `Condition: Bool: aws:MultiFactorAuthPresent: "true"` | **лише якщо** людина увійшла з MFA (код з телефона) |
+| `ManagedPolicyArns: - !Ref ReadOnlyPolicy` | прикріпити **лише** нашу політику (`!Ref` керованої політики повертає її ARN) |
+| `Outputs` | ARN ролі (його аудитор вказує, коли бере роль) і ARN політики; `!GetAtt ReadOnlyRole.Arn` — «властивість Arn ролі» |
+Експортів (Export) тут нема: стек не деплоїться, і іншим стекам ці значення не потрібні.
+
+**Згода обох сторін (cross-account):** наша trust policy довіряє акаунту аудитора; **акаунт аудитора** своєю політикою має дозволити своїй людині `sts:AssumeRole` на `arn:aws:iam::<наш акаунт>:role/kv-readonly`. Без обох дозволів роль не взяти.
+
+**Шаблон повністю:** параметр `TrustedAccountId` + 2 ресурси (`ReadOnlyPolicy`, `ReadOnlyRole`) + 2 Outputs. `validate-template` → OK, потрібна згода `CAPABILITY_NAMED_IAM`.
+**tasks.md:** 5.1 ✅. Далі — 5.2: перевірка політики симулятором за сценаріями spec.
+
+## Крок 88. Рішення: навмисну спробу деплою IAM-стека не робимо (5.4) (2026-11-01)
+
+**Рішення (моє):** не деплоїти `kv-iam` заради помилки — і так відомо, що буде `AccessDenied`.
+**Чим замінюємо доказ для завдання 3** («explain why the sandbox refuses it») — докази вже зібрані:
+- **проба** `aws iam create-role` → `AccessDenied … because no identity-based policy allows the iam:CreateRole action` (крок 50; role-dissection, розділ 6);
+- **симулятор**: `iam:CreateRole`, `iam:CreatePolicy` = `implicitDeny` (крок 47; розділ 5);
+- **Readme**: «AWS IAM — Read-only access».
+CloudFormation створював би політику й роль **з моїми правами** (`voclabs`) → упав би на тих самих діях → rollback.
+**Оновлено:** `tasks.md` 5.4 (переформульовано і відмічено), `design.md` рішення 6, пункт 3 — щоб артефакти OpenSpec не суперечили одне одному. `openspec validate --strict` → valid.
+
+## Крок 89. Шаблон `iam-readonly.yaml` цілком — що, навіщо, з чого складається, як працював би (2026-11-01)
+
+**Що це:** бланк замовлення CloudFormation на **доступ «лише на перегляд»** для аудитора з іншого акаунта. **Навіщо:** завдання 2 (політика read-only) і 3 (роль, яку бере інший principal) — у пісочниці не деплоїться, тому здаємо як IaC + перевірки.
+
+**З чого складається — 4 блоки:**
+| Блок | Що | Навіщо |
+|---|---|---|
+| 1. Шапка (`AWSTemplateFormatVersion`, `Description`) | «це бланк CloudFormation» + опис | щоб людина й CloudFormation знали, що це |
+| 2. `Parameters` → `TrustedAccountId` | поле для заповнення: ID акаунта аудитора (12 цифр) | шаблон один для будь-якого аудитора |
+| 3. `Resources` → `ReadOnlyPolicy` | **політика** `kv-readonly`: правило 1 **Allow** 49 дій перегляду; правило 2 **Deny** 21 дія, що відкриває дані/секрети | **ЩО** можна |
+| 3. `Resources` → `ReadOnlyRole` | **роль** `kv-readonly`: trust policy (лише акаунт аудитора, лише з MFA) + прикріплена `ReadOnlyPolicy`; сесія ≤ 1 год | **ХТО** може і як |
+| 4. `Outputs` | ARN ролі й політики | аудитор знає, яку роль брати |
+
+**Як блоки пов'язані:**
+```
+TrustedAccountId ──(!Sub)──► ReadOnlyRole.trust policy: «довіряю акаунту <ID>, з MFA»
+ReadOnlyPolicy ──(!Ref)──► ReadOnlyRole.ManagedPolicyArns: «на картці — цей аркуш правил»
+ReadOnlyRole ──(!GetAtt .Arn)──► Outputs.ReadOnlyRoleArn
+```
+
+**Як працював би в справжньому акаунті (не в пісочниці):**
+1. Деплой: `aws cloudformation deploy --template-file infra/iam-readonly.yaml --stack-name kv-iam --parameter-overrides TrustedAccountId=<12 цифр> --capabilities CAPABILITY_NAMED_IAM` → створюються політика і роль.
+2. Аудитор у **своєму** акаунті входить **з MFA**; його акаунт дозволяє йому `sts:AssumeRole` на нашу роль.
+3. Аудитор: `aws sts assume-role --role-arn <ReadOnlyRoleArn> …` → AWS перевіряє trust policy (його акаунт? MFA?) → видає **тимчасові ключі на ≤ 1 год**.
+4. З цими ключами: `aws ec2 describe-vpcs` ✅, `aws cloudformation describe-stacks` ✅; `aws ec2 create-vpc` ❌ (implicit deny — нема Allow); `aws s3 cp s3://…` / `aws dynamodb scan` ❌ (explicit deny — запобіжник).
+5. Через годину ключі згорають.
+
+**Чому так (ADR-004):** least privilege — бачити інфраструктуру, не чіпати її і не бачити дані клієнтів; cross-account + MFA — реалістичний і безпечний сценарій аудиту; Deny — страховка від майбутніх розширень дозволів; явний список дій замість широких зірочок — бо деякі «Describe» віддають секрети (кроки 83–84).
+
+## Крок 90. «Роль приймає політику?» — так: політику прикріплюють до ролі (2026-11-01)
+
+**Так, правильно**, точніше — політику **прикріплюють** (attach) до ролі; роль «носить» її правила. Рядок, що це робить:
+```yaml
+ManagedPolicyArns:
+  - !Ref ReadOnlyPolicy     # прикріпити до ролі нашу політику kv-readonly
+```
+**Але в ролі ДВА документи-політики різного призначення:**
+| | Trust policy (`AssumeRolePolicyDocument`) | Permissions policy (`ManagedPolicyArns` → `kv-readonly`) |
+|---|---|---|
+| Питання | **ХТО** може взяти роль | **ЩО** можна робити, коли роль узяли |
+| Де живе | вписана **всередину** ролі | **окремий** об'єкт, прикріплений до ролі |
+| У нас | акаунт аудитора, лише з MFA | 49 дій перегляду Allow + 21 дія Deny |
+| Аналогія | список біля шафи: кому видати картку | аркуш правил на картці: куди з нею пускають |
+
+**Роль блок за блоком:**
+- `Type: AWS::IAM::Role`, `RoleName: kv-readonly` — створити картку з назвою `kv-readonly`;
+- `Description` — підпис;
+- `MaxSessionDuration: 3600` — узята картка діє ≤ 1 год;
+- `AssumeRolePolicyDocument` → `Principal: AWS: arn:aws:iam::${TrustedAccountId}:root` + `Action: sts:AssumeRole` + `Condition … MultiFactorAuthPresent: "true"` — «картку видавати лише людям з акаунта аудитора, які увійшли з MFA»;
+- `ManagedPolicyArns: - !Ref ReadOnlyPolicy` — «на картці — аркуш правил `kv-readonly`».
+**Outputs:** `ReadOnlyRoleArn` (`!GetAtt ReadOnlyRole.Arn`) — повна адреса ролі, напр. `arn:aws:iam::<наш акаунт>:role/kv-readonly`; її аудитор вказує в `sts assume-role`. `ReadOnlyPolicyArn` (`!Ref ReadOnlyPolicy`) — адреса політики.
+
+## Крок 91. Навіщо Outputs з ARN; кілька політик на ролі; що після 1 години (2026-11-01)
+
+### Outputs з ARN — навіщо
+Щоб **взяти** роль, аудитор має назвати її **повну адресу (ARN)**:
+```bash
+aws sts assume-role \
+  --role-arn arn:aws:iam::<наш-акаунт>:role/kv-readonly \
+  --role-session-name audit-2026-11 \
+  --serial-number arn:aws:iam::<акаунт-аудитора>:mfa/<пристрій> --token-code 123456
+```
+`Outputs.ReadOnlyRoleArn` показує цю адресу одразу після деплою (`describe-stacks`) — не треба складати її руками. Як «адреса будинку» в довідці від будівельників (крок 66). `--serial-number` + `--token-code` — це і є MFA: який пристрій і код з нього.
+
+### Чи можна до ролі прикріпити кілька політик?
+**Так.** До ролі можна прикріпити **кілька керованих політик** (за замовчуванням до 10, квоту можна підняти) **і** мати **вбудовані** (inline). Права = **усі Allow разом мінус будь-який Deny** (крок 18).
+Приклад — наша роль у пісочниці: `voclabs` = `ReadOnlyAccess` + `Pvoclabs` (крок 42).
+У `kv-readonly` — **свідомо одна**: spec вимагає «до ролі прикріплено лише read-only політику і жодної іншої» — щоб ніщо не розширило права.
+
+### Що після `MaxSessionDuration: 3600` (1 година)
+1. Тимчасові ключі **перестають діяти**; будь-яка команда → помилка `ExpiredToken` («термін дії токена минув»).
+2. Продовжити сесію **не можна** — треба **взяти роль знову** (`sts assume-role`), а отже **знову ввести MFA-код**.
+3. **Сама роль лишається** — закінчується лише **сесія** (одна «видача картки»).
+4. Аудитор може попросити й коротшу сесію (`--duration-seconds`, від 900 с = 15 хв); 3600 — **стеля**.
+5. Якщо ключі вкрали — працюватимуть **не довше години**. Адмін може й одразу «відкликати» всі видані сесії ролі (Revoke active sessions).
+Це той самий механізм, що й наші ключі пісочниці: вони теж від ролі (`voclabs`) і «згорають» з кінцем сесії лаби (крок 41).
+
+### README
+Таблицю «trust policy vs permissions policy» і опис ролі внесемо в документ `docs/m1/iam-readonly.md` (завдання 5.5) і в README — розділ «M1 — IAM read-only» (зроблено в цьому ж кроці).
+
+## Крок 92. Перевірка політики симулятором — 33/33 ✅ (5.2); README і діаграми (2026-11-01)
+
+**Інструмент:** PyYAML на Mac нема, але **Ruby** має вбудований парсер YAML → ним витягуємо документ політики з шаблону в JSON (`!Sub/!Ref` у шаблоні йому не заважають; у самій політиці їх нема).
+
+**Новий скрипт [`scripts/check-iam-readonly.sh`](../../scripts/check-iam-readonly.sh)** (bash, щоб не ловити пастки zsh):
+1. `POLICY=$(ruby -ryaml -rjson -e '… ["Resources"]["ReadOnlyPolicy"]["Properties"]["PolicyDocument"] …')` — JSON політики;
+2. функція `check <очікуване> <політики…> -- <дії…>` викликає
+   `aws iam simulate-custom-policy --policy-input-list <JSON> --action-names <дії> --query 'EvaluationResults[].[EvalActionName,EvalDecision]'`
+   і для кожної дії друкує `ok` / `FAIL`;
+3. 4 групи: перегляд → `allowed`; зміни → `implicitDeny`; дані/секрети → `explicitDeny`; **наша + чужа `s3:*`** → `explicitDeny`;
+4. якщо хоч одна не збіглась — скрипт завершується з помилкою (`exit 1`) — тобто це **автоматичний тест** політики.
+`set -euo pipefail` — зупинитися при першій помилці команди; `bash -n` — перевірка синтаксису скрипта без запуску.
+
+**Результат:** 11 × `allowed`, 8 × `implicitDeny`, 12 × `explicitDeny`, 2 × `explicitDeny` з чужою `s3:*` → **33/33 ok, «All checks passed.»** Spec-сценарії `iam-readonly-access` («лише перегляд», «запис заборонено», «секрети», «вміст даних», «Deny перемагає ширший Allow») — ✅.
+
+**README** — у розділі «M1 — IAM read-only» підрозділ «Як перевірити»: обидві команди, що робить скрипт, таблиця груп і очікувань, результат 33/33, як перевіряється trust policy і чим доведено відмову пісочниці.
+**Діаграми** (`architecture-uk.md`): 12 — ресурси шаблону IAM і зв'язки (`!Sub`, `!Ref`, `!GetAtt`); 13 — як аудитор користувався б роллю (MFA → AssumeRole → allowed / implicit / explicit deny → ExpiredToken); 14 — як перевіряємо IAM без деплою.
+**tasks.md:** 5.2 ✅.
+
+## Крок 93. Скрипт `check-iam-readonly.sh` — рядок за рядком (2026-11-01)
+
+**Що це:** програма на **bash** (мова команд терміналу), яка **автоматично перевіряє** політику `kv-readonly` симулятором AWS і каже «усе добре» або «ось що не так».
+**Навіщо:** політику в пісочниці створити не можна → доводимо, що вона правильна, перевіркою; скрипт робить 33 перевірки однією командою, і їх можна повторити будь-коли (після зміни політики, на захисті).
+**Де і як запускати:** у терміналі на Mac, у папці `kv-store`, після `./scripts/lab-login.sh` (потрібні робочі ключі): `./scripts/check-iam-readonly.sh`. Нічого в AWS не створює і не змінює.
+
+| Рядки | Що означає |
+|---|---|
+| `#!/usr/bin/env bash` | «**shebang**»: виконувати цей файл програмою bash (а не zsh — так уникаємо пасток zsh з кроків 42, 47, 72) |
+| `# …` | коментарі: що робить скрипт і як запускати |
+| `set -euo pipefail` | «будь суворим»: `-e` — зупинитись при першій помилці; `-u` — помилка, якщо змінна не задана; `-o pipefail` — помилка в будь-якій частині ланцюжка `a \| b` теж рахується |
+| `cd "$(dirname "$0")/.."` | перейти в корінь репо (папка над `scripts/`), щоб шляхи працювали, звідки б не запустили |
+| `PROFILE="kse-lab"`, `TEMPLATE=…` | **змінні**: профіль AWS і шлях до шаблону |
+| `POLICY=$(ruby … "$TEMPLATE")` | `$( … )` = «виконай команду і поклади її вивід у змінну». Ruby читає YAML-шаблон, бере `Resources → ReadOnlyPolicy → Properties → PolicyDocument` і друкує як JSON → у змінній `POLICY` — JSON нашої політики |
+| `BROAD_S3='{…"s3:*"…}'` | друга, «чужа» політика, що дозволяє все в S3 — щоб перевірити, що наш Deny сильніший |
+| `failures=0` | лічильник невдалих перевірок |
+| `check() { … }` | **функція** `check`: `check <очікуваний результат> <політика(и)> -- <дії>` |
+| `local expected="$1"; shift` | перший аргумент — очікуване (`allowed`/`implicitDeny`/`explicitDeny`); `shift` — «зсунути» аргументи |
+| `while [ "$1" != "--" ]; do policies+=("$1"); shift; done` | збирати аргументи в список `policies`, доки не зустрінемо `--` (роздільник «далі — дії») |
+| `aws iam simulate-custom-policy --policy-input-list "${policies[@]}" --action-names "$@" --query … --output text` | **головне**: питаємо симулятор; `"$@"` — усі дії; `--query 'EvaluationResults[].[EvalActionName,EvalDecision]'` — з відповіді беремо лише «дія + рішення»; `--output text` — рядками |
+| `while read -r action decision; do … done < <( … )` | читати відповідь **рядок за рядком**: у кожному рядку — дія і рішення. `< <( … )` — «подати вивід команди на вхід циклу» |
+| `if [ "$decision" = "$expected" ] … mark="ok" else mark="FAIL"; failures=…+1` | порівняти з очікуваним; якщо не збіглось — +1 до помилок |
+| `printf '%-4s %-45s %-13s (expected %s)\n' …` | надрукувати рівною таблицею: `ok  ec2:DescribeVpcs  allowed  (expected allowed)` |
+| `echo "== …"` + `check …` (×4) | 4 групи перевірок: перегляд → allowed; зміни → implicitDeny; дані/секрети → explicitDeny; наша + `s3:*` → explicitDeny |
+| `if [ "$failures" -eq 0 ] … "All checks passed." else … exit 1` | підсумок: 0 помилок → «усе пройшло»; інакше кількість помилок і **код виходу 1** (сигнал «тест провалено» — його розуміють і люди, і CI) |
+
+## Крок 94. До чого тут JSON; перевірка trust policy (5.3 ✅) (2026-11-01)
+
+### JSON і YAML
+Обидва — **текстові формати для структурованих даних** («ключ: значення», списки). Ті самі дані, різний запис:
+```yaml
+# YAML (наш шаблон)                 # JSON (те саме)
+Effect: Deny                        {"Effect": "Deny",
+Action:                              "Action": ["s3:GetObject", "kms:Decrypt"],
+  - s3:GetObject                     "Resource": "*"}
+  - kms:Decrypt
+Resource: "*"
+```
+- **Рідний формат політик IAM — JSON** (лекція 2, слайд 11 показує саме JSON).
+- **CloudFormation** приймає шаблони і в YAML, і в JSON; ми писали YAML (коротше, є коментарі) — CloudFormation сам перетворює.
+- **Симулятор** (`simulate-custom-policy --policy-input-list`) приймає політику **лише як JSON-текст** → скрипт перетворює шматок YAML-шаблону в JSON (Ruby), щоб подати симулятору ту саму політику, що в шаблоні.
+
+### 5.3 — перевірка trust policy: суть
+У ролі два документи (крок 90). **Симулятор у скрипті перевіряв лише permissions policy** (ЩО можна). **Trust policy** (ХТО може взяти роль) — окрема річ, її перевіряємо **читанням шаблону** на дві умови зі spec:
+1. **Principal — конкретний акаунт, а не `*`.** `"Principal": "*"` означало б «роль може взяти **будь-який** AWS-акаунт у світі» → будь-хто бачив би нашу інфраструктуру. Найнебезпечніша помилка в trust policy.
+2. **Є умова MFA** — без коду з телефона роль не взяти.
+
+**Перевірка** (`grep -n -A12 "AssumeRolePolicyDocument" infra/iam-readonly.yaml`, рядки 118–131):
+```yaml
+            Principal:
+              AWS: !Sub arn:aws:iam::${TrustedAccountId}:root   # ← конкретний акаунт з параметра
+            Action: sts:AssumeRole
+            Condition:
+              Bool:
+                aws:MultiFactorAuthPresent: "true"              # ← MFA обов'язкова
+      ManagedPolicyArns:
+        - !Ref ReadOnlyPolicy                                    # ← лише наша політика
+```
+- `Principal` у шаблоні — **один раз** (рядок 123) і це `arn:aws:iam::${TrustedAccountId}:root`, причому `TrustedAccountId` має `AllowedPattern` рівно 12 цифр → `*` туди не підставиш ✅
+- умова `aws:MultiFactorAuthPresent: "true"` ✅
+- `ManagedPolicyArns` — лише `ReadOnlyPolicy` ✅ (spec «роль має лише цю політику»)
+**tasks.md:** 5.3 ✅. Лишилось 5.5 — документ `docs/m1/iam-readonly.md`.
+
+## Крок 95. Які саме «питання» скрипт ставить симулятору (2026-11-01)
+
+**Кожне питання — одного виду:** «**Якби хтось мав оцю політику, чи дозволив би йому AWS дію X?**». Симулятор відповідає одним словом: `allowed` / `implicitDeny` / `explicitDeny`. Скрипт ставить **33** таких питання (4 групи):
+| Питання (людською мовою) | Дія | Відповідь |
+|---|---|---|
+| «Чи може він **подивитись список мереж**?» | `ec2:DescribeVpcs` | `allowed` |
+| «Чи може **побачити стеки**?» | `cloudformation:DescribeStacks` | `allowed` |
+| «Чи може **створити мережу**?» | `ec2:CreateVpc` | `implicitDeny` (нема дозволу) |
+| «Чи може **видалити стек**?» | `cloudformation:DeleteStack` | `implicitDeny` |
+| «Чи може **завантажити файл** у бакет?» | `s3:PutObject` | `implicitDeny` |
+| «Чи може **прочитати файл** з бакета?» | `s3:GetObject` | `explicitDeny` (запобіжник) |
+| «Чи може **прочитати всі записи** таблиці?» | `dynamodb:Scan` | `explicitDeny` |
+| «Чи може **прочитати пароль** із Secrets Manager?» | `secretsmanager:GetSecretValue` | `explicitDeny` |
+| «А якщо **крім нашої** в нього ще політика "усе в S3 можна" — чи прочитає файл?» | `s3:GetObject` (дві політики) | `explicitDeny` |
+
+**Як виглядає одне питання «технічно»:**
+```bash
+aws iam simulate-custom-policy \
+  --policy-input-list '<JSON політики kv-readonly>' \   # «якби хтось мав оцю політику…»
+  --action-names s3:GetObject                           # «…чи можна йому оце?»
+```
+Відповідь (скорочено): `EvalActionName: s3:GetObject, EvalDecision: explicitDeny`.
+**Чому «нічого не створює»:** симулятор лише **обчислює** відповідь за правилами (як калькулятор), справжня дія (`GetObject` тощо) **не виконується**, і політика ніде в AWS не з'являється.
+
+## Крок 96. Документ `docs/m1/iam-readonly.md` — відповідь на завдання 2–3 (5.5 ✅); група 5 закрита (2026-11-01)
+
+**[`docs/m1/iam-readonly.md`](iam-readonly.md)** — письмова здача завдань 2–3:
+- текст завдань і посилання (шаблон, ADR-004, spec, скрипт, діаграми);
+- **коротко**: політика (ЩО) + роль (ХТО), сценарій «спостерігач»;
+- **що дозволяла б політика**: правило 1 Allow (таблиця сервісів) і правило 2 Deny (таблиця «що закрито і чому»), навіщо запобіжник, правило для M2+ (секрети не в env/user data/Outputs);
+- **хто і як брав би роль**: trust policy, MFA, ≤ 1 год, cross-account, згода обох сторін; як це працювало б (deploy з `CAPABILITY_NAMED_IAM`, `sts assume-role`);
+- **чому пісочниця відмовляє**: Readme, проба `create-role` (точний текст AccessDenied), симулятор; чому Academy так робить;
+- **як перевірено без деплою**: validate-template, симулятор 33/33 (повна таблиця), читання trust policy;
+- **уроки** (read-only ≠ Describe/List/Get, чому не AWS-керовані політики, зірочки);
+- відповіді на **контрольні питання 4 і 7**.
+README → посилання на документ. `openspec validate --strict` → valid. **tasks.md:** 5.5 ✅ → **група 5 (IAM) повністю ✅**.

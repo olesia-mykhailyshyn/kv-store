@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  kv-store M1 read-only access (stack kv-iam): a view-only managed policy and a
+  role that an auditor from another AWS account can assume with MFA.
+  Not deployable in the AWS Academy sandbox (IAM is read-only there); validated
+  with validate-template and the IAM policy simulator. See docs/adr/0004-readonly-access-design.md.
+
+Parameters:
+  TrustedAccountId:
+    Type: String
+    Description: 12-digit ID of the auditor's AWS account that may assume the role
+    AllowedPattern: "^[0-9]{12}$"
+    ConstraintDescription: must be a 12-digit AWS account ID
+
+Resources:
+  ReadOnlyPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: kv-readonly
+      Description: View kv-store infrastructure and its configuration; never data contents or secrets.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Metadata and configuration of the services the project uses.
+          - Sid: ViewInfrastructure
+            Effect: Allow
+            Action:
+              - ec2:DescribeAvailabilityZones
+              - ec2:DescribeVpcs
+              - ec2:DescribeSubnets
+              - ec2:DescribeRouteTables
+              - ec2:DescribeInternetGateways
+              - ec2:DescribeNatGateways
+              - ec2:DescribeVpcEndpoints
+              - ec2:DescribeNetworkAcls
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeSecurityGroupRules
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeAddresses
+              - ec2:DescribeInstances
+              - ec2:DescribeInstanceStatus
+              - ec2:DescribeVolumes
+              - ec2:DescribeTags
+              - cloudformation:Describe*
+              - cloudformation:List*
+              - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
+              - dynamodb:DescribeTable
+              - dynamodb:ListTables
+              - dynamodb:DescribeTimeToLive
+              - dynamodb:DescribeContinuousBackups
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+              - s3:GetEncryptionConfiguration
+              - s3:GetBucketVersioning
+              - s3:GetBucketPublicAccessBlock
+              - s3:GetBucketPolicyStatus
+              - s3:GetBucketTagging
+              - lambda:ListFunctions
+              - cloudwatch:Describe*
+              - cloudwatch:List*
+              - cloudwatch:GetMetricData
+              - cloudwatch:GetMetricStatistics
+              - logs:DescribeLogGroups
+              - elasticloadbalancing:Describe*
+              - autoscaling:Describe*
+              - iam:ListRoles
+              - iam:ListPolicies
+              - iam:GetRole
+              - iam:GetPolicy
+              - iam:GetPolicyVersion
+              - iam:ListAttachedRolePolicies
+              - iam:ListRolePolicies
+              - iam:GetRolePolicy
+              - servicequotas:Get*
+              - servicequotas:List*
+            # "*" on purpose: most list/describe actions (ec2:Describe*, s3:ListAllMyBuckets,
+            # lambda:ListFunctions, ...) support no resource-level scoping and only work with "*".
+            # The auditor should see the whole infrastructure; data stays closed by the Deny below.
+            Resource: "*"
+          # Guardrail: stays in force even if a broader Allow is added later (ADR-004).
+          # Object keys in a key-value store are user data, so listing them is denied too.
+          - Sid: DenyDataAndSecrets
+            Effect: Deny
+            Action:
+              - s3:GetObject*
+              - s3:ListBucket*
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:PartiQLSelect
+              - dynamodb:GetRecords
+              - secretsmanager:GetSecretValue
+              - kms:Decrypt
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+              - logs:GetLogEvents
+              - logs:FilterLogEvents
+              - logs:StartQuery
+              - lambda:GetFunction
+              # Return environment variables / user data, which may hold secrets.
+              - lambda:GetFunctionConfiguration
+              - ec2:DescribeInstanceAttribute
+              - ec2:DescribeLaunchTemplateVersions
+              - autoscaling:DescribeLaunchConfigurations
+            # "*" on purpose: the guardrail must also cover tables and buckets created later (M2+).
+            Resource: "*"
+
+  ReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: kv-readonly
+      Description: Assumed by an auditor from the trusted account (with MFA) to view kv-store infrastructure.
+      MaxSessionDuration: 3600
+      # Trust policy: WHO may assume the role.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AuditorFromAnotherAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${TrustedAccountId}:root
+            Action: sts:AssumeRole
+            Condition:
+              Bool:
+                aws:MultiFactorAuthPresent: "true"
+      # Permissions: WHAT the role may do once assumed. Only our read-only policy.
+      ManagedPolicyArns:
+        - !Ref ReadOnlyPolicy
+
+Outputs:
+  ReadOnlyRoleArn:
+    Description: ARN the auditor passes to sts:AssumeRole
+    Value: !GetAtt ReadOnlyRole.Arn
+  ReadOnlyPolicyArn:
+    Description: ARN of the read-only managed policy
+    Value: !Ref ReadOnlyPolicy

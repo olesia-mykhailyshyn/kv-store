@@ -332,3 +332,64 @@ aws cloudformation describe-stack-resource-drifts --stack-name kv-network --prof
 | Коли | **до** зміни | **після** |
 | Порівнює | шаблон **новий** ↔ стек | шаблон **поточний** ↔ реальні ресурси |
 | Питання | «що станеться, якщо застосую?» | «чи змінив хтось руками?» |
+
+---
+
+## 12. Як працює шаблон IAM (ресурси і зв'язки)
+
+```mermaid
+flowchart LR
+    param["Parameters<br/>TrustedAccountId (12 цифр)"]
+    subgraph tpl["infra/iam-readonly.yaml"]
+        pol["ReadOnlyPolicy<br/>AWS::IAM::ManagedPolicy kv-readonly<br/>Allow: 49 дій перегляду<br/>Deny: 21 дія (дані, секрети)"]
+        role["ReadOnlyRole<br/>AWS::IAM::Role kv-readonly<br/>MaxSessionDuration 1 год"]
+        trust["Trust policy (усередині ролі)<br/>Principal: arn:aws:iam::ID:root<br/>Condition: MFA = true"]
+    end
+    out["Outputs<br/>ReadOnlyRoleArn · ReadOnlyPolicyArn"]
+
+    param -->|"!Sub"| trust
+    trust --- role
+    pol -->|"!Ref → ManagedPolicyArns<br/>(прикріплено до ролі)"| role
+    role -->|"!GetAtt .Arn"| out
+    pol -->|"!Ref"| out
+```
+
+- **Політика** — ЩО можна; **роль** — картка, до якої політику прикріплено; **trust policy** — КОМУ видавати картку (README, розділ «M1 — IAM read-only»).
+- Ролі можуть мати кілька політик; у `kv-readonly` — свідомо одна (spec).
+
+## 13. Як аудитор користувався б роллю (у справжньому акаунті)
+
+```mermaid
+sequenceDiagram
+    participant A as Аудитор (свій акаунт)
+    participant STS as AWS STS
+    participant AWS as Наш акаунт (сервіси)
+
+    A->>A: вхід з MFA (код з телефона)
+    A->>STS: sts:AssumeRole role/kv-readonly + MFA-код
+    STS->>STS: trust policy: його акаунт? MFA? ✅
+    STS-->>A: тимчасові ключі (≤ 1 год)
+    A->>AWS: ec2:DescribeVpcs
+    AWS-->>A: ✅ allowed (Allow)
+    A->>AWS: ec2:CreateVpc
+    AWS-->>A: ❌ AccessDenied (implicit deny — нема Allow)
+    A->>AWS: s3:GetObject / dynamodb:Scan
+    AWS-->>A: ❌ AccessDenied (explicit deny — запобіжник)
+    Note over A,STS: через 1 год ключі недійсні (ExpiredToken) → знову AssumeRole з MFA
+```
+
+## 14. Як ми перевіряємо IAM без деплою (завдання 5.2)
+
+```mermaid
+flowchart LR
+    yaml["infra/iam-readonly.yaml"] -->|"Ruby YAML → JSON"| json["документ політики<br/>kv-readonly (JSON)"]
+    json --> sim["aws iam simulate-custom-policy<br/>(нічого не створює)"]
+    broad["чужа політика<br/>Allow s3:*"] -.->|"лише в 4-й групі"| sim
+    sim --> g1["перегляд → allowed ✅"]
+    sim --> g2["зміни → implicitDeny ✅"]
+    sim --> g3["дані/секрети → explicitDeny ✅"]
+    sim --> g4["+ s3:* → explicitDeny ✅"]
+    g1 & g2 & g3 & g4 --> res["scripts/check-iam-readonly.sh<br/>33/33 ok"]
+```
+
+Симулятор — «льотний тренажер»: проганяє той самий алгоритм, що й справжній AWS (explicit Deny → Allow → implicit deny, діаграма 7), але без реального запиту.

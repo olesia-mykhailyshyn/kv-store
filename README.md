@@ -86,3 +86,44 @@ aws cloudformation wait stack-delete-complete --stack-name kv-network --profile 
 ```
 
 Якщо стек M2 імпортує експорти `kv-network-…`, спершу видалити його (ADR-002).
+
+## M1 — IAM read-only (завдання 2–3, не деплоїться)
+
+Політика «лише перегляд» і роль, яку може взяти аудитор з **іншого** AWS-акаунта (лише з MFA). Шаблон: [`infra/iam-readonly.yaml`](infra/iam-readonly.yaml). Рішення: [ADR-004](docs/adr/0004-readonly-access-design.md). Повне пояснення: [`docs/m1/iam-readonly.md`](docs/m1/iam-readonly.md). У пісочниці AWS Academy IAM лише на читання, тому шаблон **перевіряється без деплою** (див. [розбір ролі пісочниці](docs/m1/role-dissection.md)).
+
+| | Trust policy (`AssumeRolePolicyDocument`) | Permissions policy (`kv-readonly`, через `ManagedPolicyArns`) |
+|---|---|---|
+| Питання | **ХТО** може взяти роль | **ЩО** можна робити, коли роль узяли |
+| Де записана | всередині ролі | окремий об'єкт, прикріплений до ролі |
+| У нас | акаунт аудитора (`TrustedAccountId`), лише з MFA | Allow: перегляд інфраструктури; Deny: вміст даних і секрети |
+| Аналогія | список, кому видати картку | аркуш правил на картці: куди з нею пускають |
+
+- Сесія ролі — не довше 1 год (`MaxSessionDuration: 3600`); далі ключі недійсні (`ExpiredToken`), роль треба брати знову з MFA.
+- До ролі прикріплено **лише** `kv-readonly` (ролі можуть мати кілька політик; тут — свідомо одна).
+- Explicit Deny на читання даних і секретів діє навіть якщо колись додадуть ширший Allow.
+
+### Як перевірити (нічого не створює)
+
+```bash
+# 1. шаблон написаний правильно
+aws cloudformation validate-template --template-body file://infra/iam-readonly.yaml --profile kse-lab
+
+# 2. логіка політики — policy simulator (33 перевірки, виходить з помилкою, якщо хоч одна не збіглась)
+./scripts/check-iam-readonly.sh
+```
+
+Скрипт [`scripts/check-iam-readonly.sh`](scripts/check-iam-readonly.sh):
+1. витягує документ політики `kv-readonly` з шаблону в JSON (Ruby-парсер YAML);
+2. для кожної групи дій викликає `aws iam simulate-custom-policy --policy-input-list <JSON> --action-names <дії>` — AWS проганяє справжній алгоритм оцінки прав, **нічого не виконуючи**;
+3. порівнює відповідь з очікуваною:
+
+| Група дій | Приклади | Очікуємо | Чому |
+|---|---|---|---|
+| перегляд інфраструктури | `ec2:DescribeVpcs`, `cloudformation:DescribeStacks`, `s3:ListAllMyBuckets` | `allowed` | є в Allow |
+| будь-яка зміна | `ec2:CreateVpc`, `s3:PutObject`, `iam:AttachRolePolicy` | `implicitDeny` | Allow нема |
+| дані й секрети | `s3:GetObject`, `dynamodb:Scan`, `secretsmanager:GetSecretValue`, `lambda:GetFunctionConfiguration` | `explicitDeny` | запобіжник Deny |
+| наша політика **+** чужа з `s3:*` | `s3:GetObject`, `s3:ListBucket` | `explicitDeny` | Deny перемагає ширший Allow |
+
+Результат (2026-11-01): **33/33 ok, «All checks passed.»**
+
+Trust policy (хто бере роль) перевіряється читанням шаблону: principal — `arn:aws:iam::${TrustedAccountId}:root` (не `*`), умова `aws:MultiFactorAuthPresent = "true"`. Що пісочниця не дає створити IAM, доведено пробою `aws iam create-role` → `AccessDenied` ([розбір ролі](docs/m1/role-dissection.md), розділ 6).
