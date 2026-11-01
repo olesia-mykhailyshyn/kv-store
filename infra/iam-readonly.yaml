@@ -105,6 +105,11 @@ Resources:
               - ec2:DescribeInstanceAttribute
               - ec2:DescribeLaunchTemplateVersions
               - autoscaling:DescribeLaunchConfigurations
+              - ec2:GetLaunchTemplateData
+              - ec2:GetConsoleOutput
+              # Parameter history and single log records hold the same data as the actions above.
+              - ssm:GetParameterHistory
+              - logs:GetLogRecord
             # "*" on purpose: the guardrail must also cover tables and buckets created later (M2+).
             Resource: "*"
 

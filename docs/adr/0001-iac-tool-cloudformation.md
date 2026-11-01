@@ -72,3 +72,9 @@
 
 - `infra/` — CloudFormation-шаблони (з'являться після OpenSpec proposal і решти ADR M1).
 - Деплой: `aws cloudformation deploy --template-file ... --stack-name ... --profile kse-lab`.
+
+## Поправка (2026-11-01, після AI-критики)
+
+Рішення лишається. Уточнення до обґрунтування:
+- **«Цього класу проблем нема» стосується лише state-файлу.** Стеки CloudFormation теж можуть застрягти, наприклад у `DELETE_FAILED` чи `UPDATE_ROLLBACK_FAILED`.
+- **«Простий деплой з будь-якого місця» не доведено для CI.** Симулятор: `iam:CreateOpenIDConnectProvider` = `implicitDeny`, а ключі пісочниці діють одну сесію. Модель доступу для CI/CD — окреме рішення в M2.

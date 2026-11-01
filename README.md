@@ -11,7 +11,7 @@ Capstone project for KSE SE470 Cloud Architectures (2026/27): a "light" serverle
 
 | # | Topic | Status |
 |---|---|---|
-| M1 | Infrastructure setup (LabRole, IAM in IaC, VPC, quotas, budget, recreatability) | in progress |
+| M1 | Infrastructure setup (LabRole, IAM in IaC, VPC, quotas, budget, recreatability) | implemented, awaiting defense |
 | M2 | Sharding: API, coordinator, consistent hashing, CI/CD, YCSB baseline | not started |
 | M3 | Replication: replica sets, log, quorum reads | not started |
 | M4 | Monitoring, conflict resolution, MCP server | not started |
@@ -25,8 +25,8 @@ Capstone project for KSE SE470 Cloud Architectures (2026/27): a "light" serverle
 
 ```bash
 ./scripts/lab-login.sh          # ключі нової сесії → профіль kse-lab
-./scripts/recreate-network.sh   # підняти мережу з IaC (+ 9 перевірок), ≈ 100 с
-./scripts/check-iam-readonly.sh # перевірити read-only політику симулятором (33 перевірки)
+./scripts/recreate-network.sh   # підняти мережу з IaC (+ 11 перевірок), ≈ 100 с
+./scripts/check-iam-readonly.sh # перевірити read-only політику симулятором (37 перевірок)
 python3 scripts/m2_budget.py    # перерахувати бюджет M2 з публічних прайсів AWS
 ```
 
@@ -37,13 +37,13 @@ python3 scripts/m2_budget.py    # перерахувати бюджет M2 з п
 | # | Завдання | Результат | Де |
 |---|---|---|---|
 | 1 | Розібрати роль пісочниці | роль `voclabs` = `ReadOnlyAccess` + `Pvoclabs` + SCP; що дозволено / заборонено / як з'ясували | [`docs/m1/role-dissection.md`](docs/m1/role-dissection.md) |
-| 2 | Політика «лише перегляд» як IaC | `kv-readonly`: Allow перегляд, explicit Deny дані й секрети; симулятор 33/33 | [`infra/iam-readonly.yaml`](infra/iam-readonly.yaml), [`docs/m1/iam-readonly.md`](docs/m1/iam-readonly.md) |
+| 2 | Політика «лише перегляд» як IaC | `kv-readonly`: Allow перегляд, explicit Deny дані й секрети; симулятор 37/37 | [`infra/iam-readonly.yaml`](infra/iam-readonly.yaml), [`docs/m1/iam-readonly.md`](docs/m1/iam-readonly.md) |
 | 3 | Роль з цією політикою для іншого principal | роль для аудитора з іншого акаунта з MFA; чому пісочниця відмовляє | там само |
 | 4 | Мережа: публічні й приватні підмережі | VPC `10.0.0.0/16`, 3 AZ, 6 підмереж, IGW лише для публічних | [`infra/network.yaml`](infra/network.yaml) |
 | 5 | IaC-стек мережі | стек `kv-network` (CloudFormation), 18 ресурсів, 10 експортів | розділ «M1 — мережа» нижче |
 | 6 | Квоти для M2 | квоти AWS із запасом; обмежують правила пісочниці (≤ 9 EC2) і бюджет | [`docs/m1/quotas.md`](docs/m1/quotas.md) |
 | 7 | Бюджет M2 vs $20 | 4 варіанти; 24/7 — понад $20, у сесіях — $2.7–5.4 | [`docs/m1/budget-m2.md`](docs/m1/budget-m2.md) |
-| 8 | Знести й підняти з IaC | 100 с (32 + 68), 9/9 перевірок; що зламалося | [`docs/m1/recreatability.md`](docs/m1/recreatability.md) |
+| 8 | Знести й підняти з IaC | 100 с (32 + 68), 11/11 перевірок; що зламалося | [`docs/m1/recreatability.md`](docs/m1/recreatability.md) |
 
 ### Рішення (ADR) і специфікація
 
@@ -181,7 +181,7 @@ aws cloudformation wait stack-delete-complete --stack-name kv-network --profile 
 
 - Сесія ролі — не довше 1 год (`MaxSessionDuration: 3600`); далі ключі недійсні (`ExpiredToken`), роль треба брати знову з MFA.
 - До ролі прикріплено **лише** `kv-readonly` (ролі можуть мати кілька політик; тут — свідомо одна).
-- Explicit Deny на читання даних і секретів діє навіть якщо колись додадуть ширший Allow.
+- Explicit Deny на **перелічені** дії читання даних і секретів діє, навіть якщо колись додадуть ширший Allow. Це запобіжник, а не гарантія: дії поза списком він не закриває.
 
 ### Як перевірити (нічого не створює)
 
@@ -189,7 +189,7 @@ aws cloudformation wait stack-delete-complete --stack-name kv-network --profile 
 # 1. шаблон написаний правильно
 aws cloudformation validate-template --template-body file://infra/iam-readonly.yaml --profile kse-lab
 
-# 2. логіка політики — policy simulator (33 перевірки, виходить з помилкою, якщо хоч одна не збіглась)
+# 2. логіка політики — policy simulator (37 перевірок, виходить з помилкою, якщо хоч одна не збіглась)
 ./scripts/check-iam-readonly.sh
 ```
 
@@ -202,10 +202,10 @@ aws cloudformation validate-template --template-body file://infra/iam-readonly.y
 |---|---|---|---|
 | перегляд інфраструктури | `ec2:DescribeVpcs`, `cloudformation:DescribeStacks`, `s3:ListAllMyBuckets` | `allowed` | є в Allow |
 | будь-яка зміна | `ec2:CreateVpc`, `s3:PutObject`, `iam:AttachRolePolicy` | `implicitDeny` | Allow нема |
-| дані й секрети | `s3:GetObject`, `dynamodb:Scan`, `secretsmanager:GetSecretValue`, `lambda:GetFunctionConfiguration` | `explicitDeny` | запобіжник Deny |
+| дані й секрети | `s3:GetObject`, `dynamodb:Scan`, `secretsmanager:GetSecretValue`, `lambda:GetFunctionConfiguration`, `ec2:GetConsoleOutput` | `explicitDeny` | запобіжник Deny |
 | наша політика **+** чужа з `s3:*` | `s3:GetObject`, `s3:ListBucket` | `explicitDeny` | Deny перемагає ширший Allow |
 
-Результат (2026-11-01): **33/33 ok, «All checks passed.»**
+Результат (2026-11-01): **37/37 ok, «All checks passed.»** Якщо AWS не відповів або відповідей замало, скрипт завершується з помилкою.
 
 Trust policy (хто бере роль) перевіряється читанням шаблону: principal — `arn:aws:iam::${TrustedAccountId}:root` (не `*`), умова `aws:MultiFactorAuthPresent = "true"`. Що пісочниця не дає створити IAM, доведено пробою `aws iam create-role` → `AccessDenied` ([розбір ролі](docs/m1/role-dissection.md), розділ 6).
 
@@ -283,15 +283,36 @@ python3 scripts/m2_budget.py   # перерахувати (без ключів A
 
 ## M1 — відтворюваність (завдання 8)
 
-Усю мережу можна знести і підняти **лише з IaC** однією командою: [`scripts/recreate-network.sh`](scripts/recreate-network.sh) (знести, якщо є → `aws cloudformation deploy` → 9 автоматичних перевірок за spec → час). Детально: [`docs/m1/recreatability.md`](docs/m1/recreatability.md).
+Усю мережу можна знести і підняти **лише з IaC** однією командою: [`scripts/recreate-network.sh`](scripts/recreate-network.sh) (знести, якщо є → `aws cloudformation deploy` → 11 автоматичних перевірок за spec → час). Детально: [`docs/m1/recreatability.md`](docs/m1/recreatability.md).
 
 | Запуск (2026-11-01) | Знести | Підняти | Разом | Перевірки |
 |---|---|---|---|---|
 | Після очищення платформою (стека нема) | 0 с | 68 с | 68 с | 9/9 ✅ |
 | Повний цикл: знести → підняти | 32 с | 68 с | **100 с** | 9/9 ✅ |
+| Повний цикл після додавання перевірки прив'язок підмереж | 32 с | 68 с | **100 с** | 11/11 ✅ |
 
 Що зламалося з першої спроби: у перестворенні — нічого; довкола — платформа видаляє стеки в кінці сесії (виявлено через CloudTrail), пастки zsh у командах (тому скрипти на bash). ID ресурсів після кожного перестворення нові → M2 бере їх через експорти `kv-network-…`.
 
 ```bash
 ./scripts/lab-login.sh && ./scripts/recreate-network.sh   # на початку кожної сесії
 ```
+
+## M1 — AI-критика архітектури
+
+Незалежна сесія AI знайшла 12 проблем; кожну перевірено. Повний транскрипт, перевірка й аргументи: [`docs/m1/ai-critique.md`](docs/m1/ai-critique.md).
+
+| # | Що знайшла критика | Рішення | Що зроблено |
+|---|---|---|---|
+| 4 | Скрипт міг написати «All checks passed», коли AWS не відповів; не перевірялись прив'язки підмереж | ✅ прийнято | скрипт рахує відповіді (37/37); `recreate-network.sh` перевіряє прив'язки (11/11) |
+| 3 | Deny-список неповний, слово «гарантія» завищене | ✅ прийнято | додано 4 дії в Deny; «гарантію» замінено на «запобіжник для перелічених дій»; `ListFunctions` і `GetTemplate` описано як свідомий ризик |
+| 8 | ADR застаріли або мали слабкі аргументи | ✅ прийнято | поправки в ADR-001…004 |
+| 11 | Неправильна назва дії в spec; роль обіцяна агентові, який не введе MFA | ✅ прийнято | виправлено spec і `iam-readonly.md` |
+| 6 | README радить `recreate-network.sh`, який зносить наявну мережу | ❌ відхилено | свідомий вибір: поведінку скрипта знаємо |
+| 12 | У публічних файлах є пошта й технічні ID | ❌ відхилено | ключів і номера акаунта немає, ризик низький |
+| 1 | Видалення бачили лише на безплатних ресурсах | ⏭ M2 | експеримент і власне прибирання |
+| 2 | 12+ вузлів не вміщаються в ліміт 9 EC2 | ⏭ M2 | таблиця серверів |
+| 5, 6, 7 | Доставка коду на приватні сервери, ключі CI/CD, права готових ролей | ⏭ M2 | окремі рішення |
+| 9 | Бюджет занижений (завантаження YCSB, 2 WRU, `unlimited`) | ⏭ M2 | уточнити модель |
+| 10 | `t3.micro` може обмежити бенчмарк | ⏭ M2 | додати обмеження |
+
+Теорія і контрольні питання: [`docs/m1/theory-uk.md`](docs/m1/theory-uk.md), [`docs/m1/control-questions-uk.md`](docs/m1/control-questions-uk.md).

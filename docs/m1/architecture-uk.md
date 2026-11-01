@@ -341,7 +341,7 @@ aws cloudformation describe-stack-resource-drifts --stack-name kv-network --prof
 flowchart LR
     param["Parameters<br/>TrustedAccountId (12 цифр)"]
     subgraph tpl["infra/iam-readonly.yaml"]
-        pol["ReadOnlyPolicy<br/>AWS::IAM::ManagedPolicy kv-readonly<br/>Allow: 49 дій перегляду<br/>Deny: 21 дія (дані, секрети)"]
+        pol["ReadOnlyPolicy<br/>AWS::IAM::ManagedPolicy kv-readonly<br/>Allow: 49 дій перегляду<br/>Deny: 25 дій (дані, секрети)"]
         role["ReadOnlyRole<br/>AWS::IAM::Role kv-readonly<br/>MaxSessionDuration 1 год"]
         trust["Trust policy (усередині ролі)<br/>Principal: arn:aws:iam::ID:root<br/>Condition: MFA = true"]
     end
@@ -389,7 +389,7 @@ flowchart LR
     sim --> g2["зміни → implicitDeny ✅"]
     sim --> g3["дані/секрети → explicitDeny ✅"]
     sim --> g4["+ s3:* → explicitDeny ✅"]
-    g1 & g2 & g3 & g4 --> res["scripts/check-iam-readonly.sh<br/>33/33 ok"]
+    g1 & g2 & g3 & g4 --> res["scripts/check-iam-readonly.sh<br/>37/37 ok"]
 ```
 
 Симулятор — «льотний тренажер»: проганяє той самий алгоритм, що й справжній AWS (explicit Deny → Allow → implicit deny, діаграма 7), але без реального запиту.

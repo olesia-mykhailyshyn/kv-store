@@ -57,6 +57,14 @@ rt_routes() {   # rt_routes <route table Name tag> -> routes to 0.0.0.0/0 throug
     --query "length(RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0' && starts_with(GatewayId,'igw-')])" --output text
 }
 
+rt_subnets() {   # rt_subnets <route table Name tag> <subnet Name prefix> -> associated subnets of that tier
+  local ids
+  ids=$(ec2 describe-route-tables --filters "Name=vpc-id,Values=$vpc" "Name=tag:Name,Values=$1" \
+    --query "RouteTables[0].Associations[?SubnetId].SubnetId" --output text)
+  ec2 describe-subnets --subnet-ids $ids \
+    --query "length(Subnets[?starts_with(Tags[?Key=='Name']|[0].Value,'$2')])" --output text
+}
+
 check "stack status" "CREATE_COMPLETE" "$(stack_status)"
 check "public route table: 0.0.0.0/0 -> igw" "1" "$(rt_routes "$STACK-public-rt")"
 check "private route table: no 0.0.0.0/0 -> igw" "0" "$(rt_routes "$STACK-private-rt")"
@@ -66,6 +74,8 @@ check "main route table: no route to igw" "0" "$(ec2 describe-route-tables \
 check "main route table: no subnets associated" "0" "$(ec2 describe-route-tables \
   --filters "Name=vpc-id,Values=$vpc" Name=association.main,Values=true \
   --query "length(RouteTables[0].Associations[?SubnetId])" --output text)"
+check "public route table: public subnets associated" "3" "$(rt_subnets "$STACK-public-rt" "$STACK-public-")"
+check "private route table: private subnets associated" "3" "$(rt_subnets "$STACK-private-rt" "$STACK-private-")"
 check "subnets in VPC" "6" "$(ec2 describe-subnets --filters "Name=vpc-id,Values=$vpc" \
   --query 'length(Subnets)' --output text)"
 check "subnets with automatic public IP" "0" "$(ec2 describe-subnets --filters "Name=vpc-id,Values=$vpc" \

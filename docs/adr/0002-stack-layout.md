@@ -80,3 +80,10 @@
 - `infra/iam-readonly.yaml` → стек `kv-iam` (лише валідація).
 - Деплой мережі: `aws cloudformation deploy --template-file infra/network.yaml --stack-name kv-network --profile kse-lab`.
 - Перевірка IAM: `aws cloudformation validate-template --template-body file://infra/iam-readonly.yaml --profile kse-lab`.
+
+## Поправка (2026-11-01, після AI-критики)
+
+Рішення лишається. Виправлення до тексту вище:
+- **«Мережа створюється раз і живе весь курс» неправда.** Наприкінці сесії платформа видаляє наші стеки (CloudTrail, `docs/m1/role-dissection.md`, розділ 6a). Мережу піднімаємо щосесії. Окремий стек лишається виправданим: IAM не відкочує мережу, а зміни застосунку не чіпають її в межах сесії.
+- **Спробу деплою `kv-iam` не робили** (рішення 2026-11-01). Доказ відмови пісочниці: проба `aws iam create-role` → `AccessDenied` і симулятор.
+- **Користь Export переоцінимо в M2:** стеки створюються заново щосесії, і поведінку очищення зі стеком-імпортером ще не перевірено.

@@ -43,17 +43,19 @@
 - **Будь-які зміни** (створити, змінити, видалити) — їх просто нема в Allow → **implicit deny**.
 - **Вміст даних і секрети** — правило 2, **explicit deny**:
 
-### Правило 2 — `DenyDataAndSecrets` (Deny, 21 дія)
+### Правило 2 — `DenyDataAndSecrets` (Deny, 25 дій)
 
 | Що закрито | Дії | Чому |
 |---|---|---|
 | файли S3 і **навіть список їх імен** | `s3:GetObject*`, `s3:ListBucket*` | у kv-сховищі **ключі самі є даними** (`user:42:email`) |
 | записи DynamoDB | `GetItem`, `BatchGetItem`, `Query`, `Scan`, `PartiQLSelect`, `GetRecords` | дані клієнтів |
-| секрети | `secretsmanager:GetSecretValue`, `kms:Decrypt`, `ssm:GetParameter(s/ByPath)` | паролі й ключі |
-| вміст логів | `logs:GetLogEvents`, `FilterLogEvents`, `StartQuery` | у логах можуть бути дані |
-| код і налаштування з секретами | `lambda:GetFunction`, `lambda:GetFunctionConfiguration`, `ec2:DescribeInstanceAttribute`, `ec2:DescribeLaunchTemplateVersions`, `autoscaling:DescribeLaunchConfigurations` | код функцій; **змінні середовища** Lambda і **user data** серверів, де бувають секрети |
+| секрети | `secretsmanager:GetSecretValue`, `kms:Decrypt`, `ssm:GetParameter(s/ByPath)`, `ssm:GetParameterHistory` | паролі й ключі |
+| вміст логів | `logs:GetLogEvents`, `FilterLogEvents`, `StartQuery`, `GetLogRecord` | у логах можуть бути дані |
+| код і налаштування з секретами | `lambda:GetFunction`, `lambda:GetFunctionConfiguration`, `ec2:DescribeInstanceAttribute`, `ec2:DescribeLaunchTemplateVersions`, `autoscaling:DescribeLaunchConfigurations`, `ec2:GetLaunchTemplateData`, `ec2:GetConsoleOutput` | код функцій; **змінні середовища** Lambda і **user data** серверів, де бувають секрети |
 
-**Навіщо explicit Deny, якщо implicit deny і так блокує?** Як **запобіжник**: якщо колись хтось розширить Allow (наприклад, `s3:Get*`) або прикріпить до ролі ще одну політику (`ReadOnlyAccess`), Deny все одно переможе — він сильніший за будь-який Allow. `Resource: "*"`, щоб покривати й таблиці/бакети, створені пізніше.
+**Навіщо explicit Deny, якщо implicit deny і так блокує?** Як **запобіжник**: якщо колись хтось розширить Allow (наприклад, `s3:Get*`) або прикріпить до ролі ще одну політику (`ReadOnlyAccess`), Deny все одно переможе — він сильніший за будь-який Allow. Це запобіжник лише для **перелічених** дій, а не гарантія: AWS постійно додає нові дії, тому повного списку не буде. `Resource: "*"`, щоб покривати й таблиці/бакети, створені пізніше.
+
+**Свідомий ризик:** `lambda:ListFunctions` і `cloudformation:GetTemplate` дозволені, бо аудитор має бачити функції й стеки, хоча показують змінні середовища й вміст шаблонів.
 
 **Правило для M2+:** жодних секретів у змінних середовища Lambda, у user data серверів і в Outputs стеків — `lambda:ListFunctions` і `cloudformation:Describe*` їх показують. Секрети — лише в SSM Parameter Store (`SecureString`), читання якого закрите Deny.
 
@@ -121,7 +123,7 @@ CloudFormation створює ресурси **з правами того, хт�
 | # | Перевірка | Результат |
 |---|---|---|
 | 1 | `aws cloudformation validate-template --template-body file://infra/iam-readonly.yaml` | без помилок; вимагає `CAPABILITY_NAMED_IAM` |
-| 2 | `./scripts/check-iam-readonly.sh` — `aws iam simulate-custom-policy` з JSON політики з шаблону | **33/33 ok** |
+| 2 | `./scripts/check-iam-readonly.sh` — `aws iam simulate-custom-policy` з JSON політики з шаблону | **37/37 ok** |
 | 3 | читання trust policy в шаблоні | principal — `arn:aws:iam::${TrustedAccountId}:root` (не `*`; параметр приймає лише 12 цифр); умова MFA; лише `kv-readonly` в `ManagedPolicyArns` |
 
 Результати симулятора (2026-11-01):
@@ -130,7 +132,7 @@ CloudFormation створює ресурси **з правами того, хт�
 |---|---|---|---|
 | перегляд | `ec2:DescribeVpcs`, `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`, `cloudformation:DescribeStacks`, `dynamodb:DescribeTable`, `s3:ListAllMyBuckets`, `s3:GetEncryptionConfiguration`, `lambda:ListFunctions`, `cloudwatch:GetMetricData`, `iam:GetRole`, `servicequotas:ListServiceQuotas` | `allowed` | 11/11 ✅ |
 | зміни | `ec2:CreateVpc`, `ec2:TerminateInstances`, `cloudformation:DeleteStack`, `s3:PutObject`, `dynamodb:PutItem`, `lambda:UpdateFunctionCode`, `iam:AttachRolePolicy`, `iam:CreateRole` | `implicitDeny` | 8/8 ✅ |
-| дані й секрети | `s3:GetObject`, `s3:ListBucket`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:Scan`, `secretsmanager:GetSecretValue`, `kms:Decrypt`, `ssm:GetParameter`, `logs:GetLogEvents`, `lambda:GetFunction`, `lambda:GetFunctionConfiguration`, `ec2:DescribeInstanceAttribute` | `explicitDeny` | 12/12 ✅ |
+| дані й секрети | `s3:GetObject`, `s3:ListBucket`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:Scan`, `secretsmanager:GetSecretValue`, `kms:Decrypt`, `ssm:GetParameter`, `logs:GetLogEvents`, `lambda:GetFunction`, `lambda:GetFunctionConfiguration`, `ec2:DescribeInstanceAttribute`, `ec2:GetConsoleOutput`, `ec2:GetLaunchTemplateData`, `ssm:GetParameterHistory`, `logs:GetLogRecord` | `explicitDeny` | 16/16 ✅ |
 | наша + чужа політика `Allow s3:*` | `s3:GetObject`, `s3:ListBucket` | `explicitDeny` | 2/2 ✅ |
 
 ## Що ми з'ясували по дорозі (для захисту)

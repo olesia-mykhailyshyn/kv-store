@@ -25,12 +25,25 @@ check() {
   local policies=()
   while [ "$1" != "--" ]; do policies+=("$1"); shift; done
   shift
+  local output answered=0
+  # A failed call or a missing answer must fail the check, not look like "no errors".
+  if ! output=$(aws iam simulate-custom-policy --profile "$PROFILE" \
+                  --policy-input-list "${policies[@]}" --action-names "$@" \
+                  --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text); then
+    echo "FAIL aws iam simulate-custom-policy failed"
+    failures=$((failures + $#))
+    return
+  fi
   while read -r action decision; do
+    [ -n "$action" ] || continue
+    answered=$((answered + 1))
     if [ "$decision" = "$expected" ]; then mark="ok"; else mark="FAIL"; failures=$((failures + 1)); fi
     printf '%-4s %-45s %-13s (expected %s)\n' "$mark" "$action" "$decision" "$expected"
-  done < <(aws iam simulate-custom-policy --profile "$PROFILE" \
-             --policy-input-list "${policies[@]}" --action-names "$@" \
-             --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text)
+  done <<< "$output"
+  if [ "$answered" -ne "$#" ]; then
+    echo "FAIL asked about $# actions, got $answered answers"
+    failures=$((failures + 1))
+  fi
 }
 
 echo "== View infrastructure: allowed"
@@ -48,7 +61,8 @@ echo "== Read data or secrets: explicitDeny (guardrail)"
 check explicitDeny "$POLICY" -- \
   s3:GetObject s3:ListBucket dynamodb:GetItem dynamodb:Query dynamodb:Scan \
   secretsmanager:GetSecretValue kms:Decrypt ssm:GetParameter logs:GetLogEvents \
-  lambda:GetFunction lambda:GetFunctionConfiguration ec2:DescribeInstanceAttribute
+  lambda:GetFunction lambda:GetFunctionConfiguration ec2:DescribeInstanceAttribute \
+  ec2:GetConsoleOutput ec2:GetLaunchTemplateData ssm:GetParameterHistory logs:GetLogRecord
 
 echo "== Our policy + a policy allowing s3:*: data still explicitDeny"
 check explicitDeny "$POLICY" "$BROAD_S3" -- s3:GetObject s3:ListBucket

@@ -53,7 +53,7 @@
 **Отримуємо:**
 - роль, яку бере лише довірений акаунт із MFA;
 - політику, де кожен рядок пояснюваний і перевіряється simulator'ом;
-- гарантію «дані й секрети закриті», що не зламається від майбутніх розширень.
+- запобіжник: перелічені в Deny дії лишаються забороненими, навіть якщо Allow розширять (дії поза списком він не закриває).
 
 **Платимо:**
 - список Allow треба доповнювати, коли в M2+ з'являються нові сервіси;
@@ -73,3 +73,12 @@
   - `AWS::IAM::ManagedPolicy` — statement'и `ViewInfrastructure` (Allow) і `DenyDataAndSecrets` (Deny);
   - `AWS::IAM::Role` — `AssumeRolePolicyDocument` з principal `arn:aws:iam::${TrustedAccountId}:root` і умовою MFA; `ManagedPolicyArns` — лише наша політика.
 - Перевірка: `aws cloudformation validate-template` + `aws iam simulate-custom-policy` на сценаріях зі `openspec/changes/add-m1-infrastructure/specs/iam-readonly-access/spec.md`.
+
+## Поправка (2026-11-01, після AI-критики)
+
+Шаблон пішов далі, ніж таблиця рішення вище. Актуальний стан — `infra/iam-readonly.yaml`:
+- **Allow:** замість `ec2:Describe*` явний список із 16 дій; для Lambda лише `lambda:ListFunctions`, без конфігурації. Разом 49 дій.
+- **Deny:** 25 дій. Додано, зокрема, `lambda:GetFunctionConfiguration`, `ec2:DescribeInstanceAttribute`, `ec2:DescribeLaunchTemplateVersions`, `ec2:GetLaunchTemplateData`, `ec2:GetConsoleOutput`, `autoscaling:DescribeLaunchConfigurations`, `ssm:GetParameterHistory`, `logs:GetLogRecord`.
+- **Це запобіжник для перелічених дій, а не гарантія:** AWS постійно додає нові дії, тому повного списку не буде.
+- **Свідомий ризик:** `lambda:ListFunctions` показує змінні середовища, а `cloudformation:GetTemplate` — вміст шаблонів. Лишаємо, бо аудитор має бачити функції й стеки. Правило: секретів там не тримаємо.
+- **Роль лише для людини:** через умову MFA програма її не візьме. MCP-серверу й ops-агенту потрібне окреме рішення в M4–M5.
