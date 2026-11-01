@@ -17,6 +17,23 @@ Capstone project for KSE SE470 Cloud Architectures (2026/27): a "light" serverle
 | M4 | Monitoring, conflict resolution, MCP server | not started |
 | M5 | Autoscaling, rebalancing, ops agent, final benchmark | not started |
 
+## Куди рухаємось: форма системи в M2
+
+M1 готує фундамент для M2, де з'являється саме kv-сховище:
+
+```
+клієнт / YCSB ──► точка входу ──► Coordinator ──hash(key)──► Шард 1 (частина ключів)
+                                                    └──────► Шард 2 (інша частина ключів)
+```
+
+- **Coordinator** — маршрутизатор: приймає `CREATE` / `READ` / `DELETE` / `EXISTS`, рахує хеш ключа (consistent hashing) і обирає шард.
+- **Шарди** — наші програми, кожна зберігає свою частину ключів; реєструються в coordinator при старті.
+- **Точка входу** — куди клієнти шлють запити (кандидат — ALB; API Gateway у пісочниці нема).
+- **YCSB** (Yahoo! Cloud Serving Benchmark) — стандартний навантажувальний тест для key-value/NoSQL сховищ; міряє пропускну здатність (операцій/с) і затримки (p95, p99). Його числа з M2 — базова лінія для M3 і M5.
+- Плюс IaC і CI/CD для всього цього.
+
+Код coordinator і шардів пишемо самі; AWS дає, **де** запускати (EC2 або Lambda), де зберігати і точку входу. Тому в M1 перевіряємо **квоти** сервісів-кандидатів (завдання 6) і **бюджет** (завдання 7) — щоб архітектуру M2 обирати, вже знаючи обмеження. Архітектура M2 буде рішенням (ADR) у M2.
+
 ## M1 — мережа `kv-network`
 
 Мережа, у якій житимуть усі сервіси сховища: VPC `10.0.0.0/16` у 3 AZ, публічні підмережі з виходом в інтернет через Internet Gateway, приватні — лише для доступу всередині VPC. Шаблон: [`infra/network.yaml`](infra/network.yaml). Рішення: [ADR-002](docs/adr/0002-stack-layout.md) (стеки), [ADR-003](docs/adr/0003-cidr-addressing.md) (адреси). Діаграми: [`docs/m1/architecture-uk.md`](docs/m1/architecture-uk.md).
@@ -127,3 +144,53 @@ aws cloudformation validate-template --template-body file://infra/iam-readonly.y
 Результат (2026-11-01): **33/33 ok, «All checks passed.»**
 
 Trust policy (хто бере роль) перевіряється читанням шаблону: principal — `arn:aws:iam::${TrustedAccountId}:root` (не `*`), умова `aws:MultiFactorAuthPresent = "true"`. Що пісочниця не дає створити IAM, доведено пробою `aws iam create-role` → `AccessDenied` ([розбір ролі](docs/m1/role-dissection.md), розділ 6).
+
+## M1 — квоти і обмеження для M2 (завдання 6)
+
+Ліміти, які можуть вплинути на M2 (coordinator + 2 шарди + точка входу + YCSB). Перевірено 2026-11-01 у пісочниці, регіон `us-east-1`. Детально: [`docs/m1/quotas.md`](docs/m1/quotas.md).
+
+### Квоти AWS (сервіс Service Quotas і API сервісів)
+
+| Сервіс | Квота | Значення | Потреба M2 (оцінка) | Обмежує? |
+|---|---|---|---|---|
+| EC2 | Running On-Demand Standard instances (`L-1216C47A`) | 256 vCPU | 4 сервери `t3` ≈ 8 vCPU | ні |
+| EC2 | `max-instances` (атрибут акаунта) | 20 | ~4 | ні |
+| EC2 | EC2-VPC Elastic IPs (`L-0263D0A3`) | 5 | 0–1 | ні, але кожна платна |
+| Lambda | Concurrent executions (`L-B99A9384`) | 400 | десятки–сотні при YCSB | ні |
+| Lambda | Function timeout | 900 с (15 хв) | мілісекунди на запит | ні |
+| Lambda | Synchronous payload | 6 МБ | малі ключі/значення | ні |
+| Lambda | Deployment package (zip / unzipped) | 50 / 250 МБ | невеликий код | ні |
+| Lambda | Environment variables | 4 КБ | кілька змінних | ні |
+| DynamoDB | Maximum number of tables | 2500 | кілька | ні |
+| DynamoDB | Table-level read / write throughput | 40 000 RCU / 40 000 WCU | сотні–тисячі оп/с | ні |
+| DynamoDB | Account-level read / write throughput | 80 000 / 80 000 | — | ні |
+| ELB | Application Load Balancers per Region | 50 | 1 | ні |
+| ELB | Targets per ALB | 1000 | кілька | ні |
+| VPC | VPCs per Region | 5 | 2 (default + наша) | ні |
+| VPC | Internet gateways per Region | 5 | 1 | ні |
+| VPC | Subnets per VPC | 200 | 6 | ні |
+| VPC | Inbound/outbound rules per security group | 60 | кілька | ні |
+| CloudFormation | Stacks | 2000 | кілька | ні |
+| CloudFormation | Resources per template | 500 | десятки | ні |
+| CloudFormation | Template body (передача напряму) | 51 200 байт | `network.yaml` ≈ 8 КБ | ні |
+
+RCU / WCU — одиниці пропускної здатності DynamoDB: 1 RCU = 1 читання (до 4 КБ) за секунду, 1 WCU = 1 запис (до 1 КБ) за секунду.
+
+### Що реально обмежує (правила пісочниці і бюджет)
+
+| # | Обмеження | Джерело | Наслідок для M2+ |
+|---|---|---|---|
+| 1 | **≤ 9 EC2-інстансів**, спроба більше → блокування акаунта | Readme пісочниці | M2 (≈ 4) вміщається; M3 (2 × 3 репліки + coordinator ≈ 7+) і M5 — впритул |
+| 2 | EC2 лише `t2`/`t3` від `nano` до `medium`; EBS ≤ 35 ГБ `gp2`; лише On-Demand | Readme | скромна продуктивність |
+| 3 | **Нема** API Gateway, SQS, ECS/ECR, Secrets Manager | Readme, симулятор | точка входу — ALB або Lambda; без черг і контейнерів |
+| 4 | Публічні IPv4 платні (≈ $3.6/міс кожна), Elastic IP ≤ 5 | ціни AWS, квота | мінімум публічних адрес |
+| 5 | **Ресурси видаляються в кінці кожної сесії** (платформа видаляє стеки) | CloudTrail, `list-stacks` | щосесії піднімати все з IaC; дані зникають; YCSB і демо — в межах сесії |
+| 6 | Бюджет **$20** на весь курс | лаба | розрахунок — завдання 7 |
+
+```bash
+# як перевірити (лише читання)
+aws ec2 describe-account-attributes --attribute-names max-instances max-elastic-ips --profile kse-lab
+aws lambda get-account-settings --profile kse-lab
+aws dynamodb describe-limits --profile kse-lab
+aws service-quotas list-service-quotas --service-code <ec2|lambda|dynamodb|elasticloadbalancing|vpc|cloudformation> --profile kse-lab
+```
