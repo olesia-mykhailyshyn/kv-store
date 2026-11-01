@@ -179,6 +179,25 @@ aws iam simulate-principal-policy --policy-source-arn "arn:aws:iam::<ACCOUNT>:ro
 | `with an explicit deny in an identity-based policy` | **explicit deny** у політиці ролі (`Pvoclabs`) | `iam:GetRole` на `voclabs` (розділ 3) |
 | `with an explicit deny in a service control policy: …` | **explicit deny** від SCP організації | `iam:ListRolePolicies` на `vocareum` (розділ 4) |
 
+## 6a. CloudTrail: що платформа робить з нашими ресурсами
+
+**CloudTrail** — журнал усіх викликів API в акаунті (хто, що, коли, звідки); є в Readme. Знайшли з його допомогою, що ресурси **не** зберігаються між сесіями:
+
+```bash
+aws cloudformation list-stacks --profile kse-lab \
+  --query 'StackSummaries[].[StackName,StackStatus,CreationTime,DeletionTime]' --output text
+aws cloudtrail lookup-events --profile kse-lab \
+  --lookup-attributes AttributeKey=ResourceName,AttributeValue=kv-network \
+  --start-time 2026-11-01T01:00:00Z --end-time 2026-11-01T03:00:00Z
+```
+
+| Що | Результат |
+|---|---|
+| `list-stacks` | `kv-network` — `DELETE_COMPLETE` о 02:09:48 UTC; у ту саму секунду видалено службовий стек платформи `c229528a…`, який створюється при кожному Start Lab (і створює ролі `lambda-run-role`, `myBasicLambdaRole`, `myS3Role`); старий `demo-vpc-stack` (жовтень) — так само |
+| CloudTrail `DeleteStack` для `kv-network` | `userIdentity`: `arn:aws:sts::<ACCOUNT>:assumed-role/vocareum/resource`, IP `34.213.185.13`, `aws-sdk-php` |
+
+**Висновок:** у кінці сесії (таймер ~3 год) платформа AWS Academy через свою роль `vocareum` (`AdministratorAccess`, розділ 4) **видаляє наші стеки**. Ресурси пісочниці **не переживають** сесію → усе піднімаємо з IaC щосесії.
+
 ## 7. Підсумок: дозволено / заборонено / як з'ясували
 
 **Хто ми:** сесія ролі `voclabs` (не IAM-користувач і не `LabRole` — `LabRole` в акаунті нема).
@@ -206,6 +225,7 @@ ReadOnlyAccess (AWS, Allow)  →  Pvoclabs (Academy, Allow + explicit Deny)  →
 | Дивитися й «вдягати» службову роль платформи `vocareum` | **explicit deny** (`Pvoclabs` і SCP) | симулятор = explicitDeny; `list-role-policies vocareum` → `explicit deny in a service control policy` |
 | API Gateway, SQS (і все, чого нема в Readme) | **implicit deny** | симулятор = implicitDeny; відсутні в Readme |
 | Створювати AWS Organizations | **explicit deny від SCP** | симулятор: explicitDeny, `AllowedByOrganizations = False` |
+| Pricing API (`pricing:GetProducts`) | **explicit deny від SCP** | `aws pricing get-products` → `AccessDeniedException … explicit deny in a service control policy` (2026-11-01, під час бюджету M2) |
 | Понад 9 EC2-інстансів | правило платформи → **блокування акаунта** | Readme |
 | RDS Multi-AZ, реєстрація доменів | правило платформи | Readme |
 
@@ -214,12 +234,17 @@ ReadOnlyAccess (AWS, Allow)  →  Pvoclabs (Academy, Allow + explicit Deny)  →
 2. **CLI**: `sts get-caller-identity` (хто ми), `iam list-*` / `get-*` (які політики), `get-policy-version` (текст публічної `ReadOnlyAccess`).
 3. **Policy simulator**: `simulate-principal-policy` (наша роль), з `--resource-arns` для конкретних ресурсів; `simulate-custom-policy` (довільна політика).
 4. **Проби**: справжні виклики, для EC2 — з `--dry-run`.
+4a. **CloudTrail** (`lookup-events`) і `list-stacks` — хто і коли змінював ресурси акаунта.
 5. **Текст помилки** як джерело: він називає шар заборони (identity-based policy / service control policy) і тип (explicit / «no policy allows»).
 
 ### Що це означає для проєкту
 - **M1:** мережу деплоїмо по-справжньому; IAM-завдання 2–3 — лише як код, перевірка симулятором.
 - **M2+:** сервіси отримують права через **готові ролі**; точка входу — з наявного (ALB або Lambda), API Gateway нема.
 - **M3–M5:** ліміт **9 EC2** закладати в дизайн реплікації й автомасштабування.
+
+### Поведінка платформи
+- Наприкінці кожної сесії платформа (роль `vocareum`) видаляє наші стеки — CloudTrail (розділ 6a). Ресурси між сесіями не зберігаються.
+- На кожному Start Lab платформа заново створює службовий стек і готові ролі для сервісів.
 
 ### Розбіжність з лекцією, яку ми знайшли
 Лекція 2 (слайд 24): «у пісочниці Org немає». Насправді акаунт **входить** в AWS Organizations платформи і над ним діє **SCP** — ми лише не можемо створювати свою організацію.

@@ -45,6 +45,8 @@ M1 готує фундамент для M2, де з'являється саме 
 
 Вартість: $0 (VPC, підмережі, IGW, route tables безкоштовні; NAT Gateway свідомо нема).
 
+> ⚠️ **Ресурси пісочниці не зберігаються між сесіями:** у кінці сесії AWS Academy видаляє наші стеки (перевірено через CloudTrail, див. [розбір ролі](docs/m1/role-dissection.md), розділ 6a). На початку кожної сесії мережу треба підняти заново кроками нижче.
+
 ### Як підняти
 
 1. AWS Academy → Cloud Architecting → Sandbox → **Start Lab**; AWS Details → AWS CLI → Show → вставити блок у `lab-credentials.ini` (файл у `.gitignore`).
@@ -193,4 +195,26 @@ aws ec2 describe-account-attributes --attribute-names max-instances max-elastic-
 aws lambda get-account-settings --profile kse-lab
 aws dynamodb describe-limits --profile kse-lab
 aws service-quotas list-service-quotas --service-code <ec2|lambda|dynamodb|elasticloadbalancing|vpc|cloudformation> --profile kse-lab
+```
+
+## M1 — бюджет M2 (завдання 7)
+
+Скільки коштував би M2 (2 шарди) у різних варіантах, порівняно зі стелею пісочниці **$20**. Ціни — з публічних прайсів AWS (Pricing API у пісочниці заборонений SCP), розраховано скриптом [`scripts/m2_budget.py`](scripts/m2_budget.py) 2026-11-01. Детально, з припущеннями: [`docs/m1/budget-m2.md`](docs/m1/budget-m2.md).
+
+> ⚠️ Це **оцінка**, а не рішення: архітектуру M2 оберемо в M2 (ADR).
+
+| Варіант | Склад | 24/7 місяць | Лише сесії (40 год) |
+|---|---|---|---|
+| **А. EC2 без ALB** | coordinator + 2 шарди `t3.micro` (приватні), клієнт YCSB `t3.small` (публічний, 1 IPv4) | **$45.01** ❌ | **$2.66** ✅ |
+| А+. EC2 + ALB | як А + ALB у 2 AZ | $74.58 ❌ | $4.28 ✅ |
+| Б. Serverless | Lambda + DynamoDB, клієнт YCSB `t3.small` | $23.94 ❌ | $5.38 ✅ |
+| В. Змішаний | coordinator у Lambda, 2 шарди `t3.micro`, клієнт `t3.small` | $37.83 ❌ | $3.41 ✅ |
+| (порівняння) NAT у 3 AZ | лише NAT, додатково до варіанту | $109.72 ❌ | $6.22 |
+
+Ключові ціни (us-east-1): `t3.micro` $0.0104/год, `t3.small` $0.0208/год, EBS `gp2` $0.10/ГБ-міс, публічна IPv4 $0.005/год, ALB $0.0225/год + $0.008/LCU-год, NAT $0.045/год + $0.045/ГБ, Lambda $0.20/млн + $0.0000166667/ГБ-с, DynamoDB on-demand $0.125/млн читань і $0.625/млн записів, S3 Gateway Endpoint — $0.
+
+**Висновок:** 24/7 жоден варіант не вміщається в $20; у реальному режимі пісочниці (ресурси живуть лише під час сесій і видаляються в кінці) — усі вміщаються ($2.7–5.4 за M2). Найдорожче — сервери й публічні IPv4; ALB і NAT для M2 не потрібні.
+
+```bash
+python3 scripts/m2_budget.py   # перерахувати (без ключів AWS, нічого не створює)
 ```
