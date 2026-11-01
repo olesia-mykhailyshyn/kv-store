@@ -25,8 +25,8 @@
 
 ## 4. Мережевий стек `kv-network` (завдання 4–5)
 
-- [ ] 4.1 Написати `infra/network.yaml`: VPC `10.0.0.0/16`, IGW і його приєднання, шість підмереж за ADR-003 (`Fn::GetAZs`, `MapPublicIpOnLaunch: false`), публічна і приватна route table, маршрут `0.0.0.0/0 → IGW` лише в публічній, явні прив'язки всіх шести підмереж, Outputs з Export за design (рішення 4); перевірка: `aws cloudformation validate-template --template-body file://infra/network.yaml --profile kse-lab` без помилок
-- [ ] 4.2 Перед деплоєм перевірити AZ регіону (`aws ec2 describe-availability-zones`); перевірка: щонайменше 3 AZ у стані `available`
+- [x] 4.1 Написати `infra/network.yaml`: VPC `10.0.0.0/16`, IGW і його приєднання, шість підмереж за ADR-003 (`Fn::GetAZs`, `MapPublicIpOnLaunch: false`), публічна і приватна route table, маршрут `0.0.0.0/0 → IGW` лише в публічній, явні прив'язки всіх шести підмереж, Outputs з Export за design (рішення 4); перевірка: `aws cloudformation validate-template --template-body file://infra/network.yaml --profile kse-lab` без помилок
+- [x] 4.2 Перед деплоєм перевірити AZ регіону (`aws ec2 describe-availability-zones`); перевірка: щонайменше 3 AZ у стані `available`
 - [ ] 4.3 Створити change set для нового стека і переглянути його разом (контрольне питання 9), потім виконати; перевірка: стек `kv-network` у статусі `CREATE_COMPLETE`
 - [ ] 4.4 Перевірити spec «Публічні підмережі мають вихід в інтернет»: `aws ec2 describe-route-tables` для публічних підмереж; перевірка: є `0.0.0.0/0 → igw-…`
 - [ ] 4.5 Перевірити spec «Приватні підмережі лише для внутрішнього доступу»: route table приватних — лише `local`, усі шість підмереж мають явну прив'язку, main route table без маршруту на IGW; перевірка: вивід команд записано в журнал
@@ -34,6 +34,8 @@
 - [ ] 4.7 Перевірити spec «Ідентифікатори доступні»: `aws cloudformation list-exports`; перевірка: є всі `kv-network-…` експорти з design
 - [ ] 4.8 Drift detection (контрольне питання 9): виявити drift → `IN_SYNC`; змінити тег VPC у консолі → `MODIFIED`; повернути тег → `IN_SYNC`; перевірка: три результати записані в журнал
 - [ ] 4.9 Розділ «Мережа» в `README.md`: як підняти, як перевірити (команди 4.4–4.7), схема підмереж; перевірка: команди з README запускаються як написано
+- [x] 4.10 Діаграми M1 у `docs/m1/architecture-uk.md` (Mermaid: мережа, маршрутизація, шлях пакета, залежності ресурсів, права пісочниці, read-only роль, Exports); перевірка: діаграми малюються в перегляді VS Code; оновлювати разом зі змінами інфраструктури
+- [x] 4.11 `.vscode/settings.json` з `yaml.customTags` для тегів CloudFormation; перевірка: VS Code не підкреслює `!Ref`/`!Sub` як помилки
 
 ## 5. IAM read-only (завдання 2–3)
 
