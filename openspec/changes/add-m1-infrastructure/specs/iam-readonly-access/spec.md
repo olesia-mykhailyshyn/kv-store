@@ -28,7 +28,7 @@ Read-only політика MUST NOT дозволяти читати значен
 Read-only політика SHALL дозволяти бачити ресурси сховища даних (таблиці, бакети) та їхні налаштування, але MUST NOT дозволяти читати їхній вміст: записи таблиць DynamoDB і об'єкти S3.
 
 #### Scenario: Метадані видно
-- **WHEN** політику перевіряють policy simulator'ом на `dynamodb:DescribeTable` і `s3:GetBucketEncryption`
+- **WHEN** політику перевіряють policy simulator'ом на `dynamodb:DescribeTable` і `s3:GetEncryptionConfiguration`
 - **THEN** результат для обох дій — `allowed`
 
 #### Scenario: Вміст не читається
