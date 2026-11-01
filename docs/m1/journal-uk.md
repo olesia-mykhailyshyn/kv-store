@@ -1972,3 +1972,193 @@ VpcId: !ImportValue kv-network-VpcId
 **Навіщо нам:** це **фундамент** усього проєкту. З M2 шарди, coordinator, репліки житимуть **усередині** VPC: у приватних підмережах — сховані від інтернету; точка входу — у публічних. Без VPC нема де поставити жоден сервер чи сервіс з мережею.
 **Чому своя, а не default VPC:** у default усі підмережі публічні, її створили не ми і вона не в IaC; завдання вимагає приватні підмережі й IaC-стек.
 **У коді:** ресурс `Vpc` (`Type: AWS::EC2::VPC`, `CidrBlock: 10.0.0.0/16`) — перший у `infra/network.yaml`; усі інші ресурси посилаються на нього через `!Ref Vpc`.
+
+## Крок 68. Change set для мережі — попередній перегляд (4.3, частина 1) (2026-11-01)
+
+**Шаблон закомічено перед деплоєм:** `9b10731 feat(m1): add CloudFormation network template and architecture diagrams` → у git код з'явився **раніше**, ніж в AWS.
+
+**Що таке change set:** «**попередній перегляд змін**»: CloudFormation показує, що **створить / змінить / видалить**, і нічого не робить, поки не скажемо «виконати». Контрольне питання 9: change set відповідає на «**що станеться**, якщо я застосую цей шаблон?» (до зміни); drift detection — «**чи змінив хтось** ресурси поза шаблоном?» (після).
+
+**Команда:**
+```bash
+aws cloudformation create-change-set \
+  --stack-name kv-network --change-set-name initial-create --change-set-type CREATE \
+  --template-body file://infra/network.yaml \
+  --tags Key=Project,Value=kv-store Key=Milestone,Value=m1 \
+  --profile kse-lab
+aws cloudformation wait change-set-create-complete --stack-name kv-network --change-set-name initial-create --profile kse-lab
+aws cloudformation describe-change-set --stack-name kv-network --change-set-name initial-create --profile kse-lab
+```
+- `--change-set-type CREATE` — стека ще нема, створюємо новий;
+- `--tags` — теги **на весь стек** (крок 56): CloudFormation сам почепить `Project=kv-store`, `Milestone=m1` на всі ресурси;
+- `wait …` — чекати, поки AWS підготує перегляд.
+
+**Результат:** change set `CREATE_COMPLETE`, `ExecutionStatus: AVAILABLE` (готовий до виконання). **18 змін, усі `Add`**: VPC, IGW, приєднання, 6 підмереж, 2 route tables, маршрут, 6 прив'язок — **точно** те, що в шаблоні. Нічого зайвого (нема NAT, Interface Endpoint).
+Стек `kv-network` зараз `REVIEW_IN_PROGRESS` — порожня оболонка, що «чекає перегляду»; ресурсів ще **нема**.
+
+**Далі:** `execute-change-set` — лише після мого «так».
+
+## Крок 69. Що таке change set і як CloudFormation створює ресурси → у документацію (2026-11-01)
+
+Пояснення додано в [`architecture-uk.md`, розділ 10](architecture-uk.md) — з командами, діаграмою послідовності (Mermaid `sequenceDiagram`) і «навіщо».
+**Коротко:**
+- **Change set** = «список змін» між тим, що є в AWS, і шаблоном: `Add` / `Modify` (з позначкою «чи треба замінити ресурс») / `Remove`. Перегляд нічого не змінює; виконання — окрема команда `execute-change-set`.
+- **Як CloudFormation створює:** ми лише надсилаємо шаблон → CloudFormation **в AWS** будує **граф залежностей** (`!Ref`, `DependsOn`) → незалежне створює **паралельно** → для кожного ресурсу викликає API сервісу (`ec2:CreateVpc`…) **з нашими правами** (`voclabs`) → запам'ятовує «логічне ім'я → реальний ID» → при помилці rollback.
+- Робота йде на боці AWS → кінець сесії лаби посеред деплою не зупинить CloudFormation.
+**Опис деплою в README** («як підняти, як перевірити») — у завданні 4.9, після перевірок.
+
+## Крок 70. `execute-change-set` — що робить; таблиця команд у документації (2026-11-01)
+
+`aws cloudformation execute-change-set --stack-name kv-network --change-set-name initial-create --profile kse-lab`
+- `execute-change-set` — «**виконуй** цей план»: CloudFormation починає реально створювати ресурси; стек `REVIEW_IN_PROGRESS` → `CREATE_IN_PROGRESS` → `CREATE_COMPLETE` (або `ROLLBACK_…` при помилці).
+- `--stack-name` + `--change-set-name` — **який саме** план виконати (у стека може бути кілька).
+- `--profile kse-lab` — з якими ключами (права `voclabs`).
+- Після виконання план «використано»; наступна зміна — **новий** change set типу `UPDATE`.
+- `aws cloudformation deploy` робить «створи change set + одразу виконай» однією командою; ми розділили, щоб **переглянути план до виконання**.
+Таблицю «команда частина за частиною» для `create-change-set`, `describe-change-set`, `execute-change-set`, `wait` додано в [`architecture-uk.md`, розділ 10](architecture-uk.md).
+
+## Крок 71. Мережа в AWS! `execute-change-set` → `CREATE_COMPLETE` (4.3 ✅) (2026-11-01)
+
+**Команди:**
+```bash
+aws cloudformation execute-change-set --stack-name kv-network --change-set-name initial-create --profile kse-lab
+aws cloudformation wait stack-create-complete --stack-name kv-network --profile kse-lab
+```
+**Результат:** `wait` завершився без помилок за **~63 с**; стек **`CREATE_COMPLETE`**; теги стека `Project=kv-store`, `Milestone=m1`. За подіями стека: перший ресурс (`Vpc`) готовий о 00:19:36 UTC, весь стек — о 00:20:03 UTC (≈ 27 с самого створення).
+
+**Що створено** (`aws cloudformation list-stack-resources --stack-name kv-network`) — 18 ресурсів, усі `CREATE_COMPLETE`:
+| Логічне ім'я | Реальний ID |
+|---|---|
+| `Vpc` | `vpc-0762773ace736d258` |
+| `InternetGateway` | `igw-079cea954fee46b84` |
+| `InternetGatewayAttachment` | `IGW\|vpc-0762773ace736d258` |
+| `PublicSubnetA/B/C` | `subnet-011b36c4ef0db3d5d`, `subnet-070d1065e167e9a1e`, `subnet-08171a7e16be80dea` |
+| `PrivateSubnetA/B/C` | `subnet-0df9d89d97cbfb757`, `subnet-0a22be07312bb8c94`, `subnet-02c3424547c3dd01a` |
+| `PublicRouteTable` | `rtb-0d2921c3ef9259a0b` |
+| `PrivateRouteTable` | `rtb-02757377276abbf0b` |
+| `PublicDefaultRoute` | `rtb-0d2921c3ef9259a0b\|0.0.0.0/0` |
+| 6 × `…RouteTableAssociation` | `rtbassoc-…` |
+Ось і є «логічне ім'я → реальний ID», яке запам'ятовує стек (крок 69).
+
+**Outputs / Exports** (`describe-stacks … Outputs`): усі 10 `kv-network-…` на місці, напр. `kv-network-VpcId = vpc-0762773ace736d258`, `kv-network-VpcCidr = 10.0.0.0/16`, `kv-network-PrivateSubnetIds = subnet-0df9…,subnet-0a22…,subnet-02c3…`.
+
+**Запам'ятати для завдання 8:** після перестворення ID будуть **інші** — порівняємо з цією таблицею.
+**Вартість:** $0 (VPC, підмережі, IGW, route tables безкоштовні).
+**tasks.md:** 4.3 ✅. Далі — перевірки за spec (4.4–4.7).
+
+## Крок 72. Перевірки мережі за spec — усе ✅ (4.4–4.7) (2026-11-01)
+
+**Помилка інструменту:** знову zsh — `P="--profile kse-lab"` і `$P` у команді не розбився на два слова (`Unknown options: --profile kse-lab`). Пишемо `--profile kse-lab` явно.
+
+### 4.4 і 4.5 — таблиці маршрутів
+```bash
+aws ec2 describe-route-tables --profile kse-lab --filters Name=vpc-id,Values=vpc-0762773ace736d258
+```
+| Таблиця | Маршрути | Прив'язані підмережі | Main |
+|---|---|---|---|
+| `kv-network-public-rt` (`rtb-0d29…`) | `10.0.0.0/16 → local` (active); **`0.0.0.0/0 → igw-079cea954fee46b84`** (active) | public-a, public-b, public-c | ні |
+| `kv-network-private-rt` (`rtb-0275…`) | **лише** `10.0.0.0/16 → local` | private-a, private-b, private-c | ні |
+| main (`rtb-00d2cd8abfaac3fa5`, без назви — AWS створив сам) | **лише** `10.0.0.0/16 → local` | **жодної** | **так** |
+- spec «Публічні підмережі мають вихід в інтернет» ✅ — у публічній таблиці `0.0.0.0/0 → igw-…`.
+- spec «Приватні — лише внутрішній доступ» ✅ — приватна таблиця без `0.0.0.0/0`; **усі 6** підмереж мають **явну** прив'язку; **main** ні до чого не прив'язана і **без** маршруту на IGW.
+
+```bash
+aws ec2 describe-subnets --profile kse-lab --filters Name=vpc-id,Values=vpc-0762773ace736d258
+```
+| Підмережа | CIDR | AZ | Публічна IP автоматично |
+|---|---|---|---|
+| public-a / b / c | `10.0.0.0/24` / `10.0.1.0/24` / `10.0.2.0/24` | 1a / 1b / 1c | False |
+| private-a / b / c | `10.0.10.0/24` / `10.0.11.0/24` / `10.0.12.0/24` | 1a / 1b / 1c | False |
+→ схема ADR-003 ✅; `MapPublicIpOnLaunch = False` скрізь ✅; у кожній AZ пара public + private ✅.
+
+### 4.6 — нема погодинно платних ресурсів
+```bash
+aws cloudformation list-stack-resources --stack-name kv-network --profile kse-lab
+```
+Типи ресурсів: 1 `VPC`, 1 `InternetGateway`, 1 `VPCGatewayAttachment`, 6 `Subnet`, 2 `RouteTable`, 1 `Route`, 6 `SubnetRouteTableAssociation` = 18. **Нема** `NatGateway` і `VPCEndpoint` ✅.
+
+### 4.7 — експорти
+```bash
+aws cloudformation list-exports --profile kse-lab
+```
+`kv-network-…` експортів — **10** ✅ (список — крок 71).
+
+**tasks.md:** 4.4, 4.5, 4.6, 4.7 ✅. Наступне — 4.8 drift detection.
+
+## Крок 73. Що таке drift detection (2026-11-01)
+
+**Drift («дрейф»)** — реальні ресурси в AWS **відпливли** від шаблону, бо хтось змінив їх **руками** в обхід CloudFormation. **Drift detection** — перевірка CloudFormation: порівнює кожен ресурс стека з шаблоном.
+**Аналогія:** будинок за кресленням; хтось перефарбував двері й не оновив креслення → креслення бреше; drift detection = інспектор з кресленням.
+**Навіщо:** IaC обіцяє «код = правда». Ручна зміна: зникне при перестворенні (завдання 8); може бути перезаписана наступним оновленням; її нема в коді → не поясниш на захисті.
+**Статуси:** стек `IN_SYNC` / `DRIFTED`; ресурс `IN_SYNC` / `MODIFIED` / `DELETED` / `NOT_CHECKED`.
+**Команди:** `detect-stack-drift` (запуск) → `describe-stack-drift-detection-status` (результат) → `describe-stack-resource-drifts` (деталі).
+**Обмеження:** бачить зміни властивостей ресурсів **у стеку**, не бачить ресурсів, доданих поза стеком; не всі типи підтримуються; сама нічого не виправляє.
+Детально з діаграмою і порівнянням з change set — [`architecture-uk.md`, розділ 11](architecture-uk.md).
+
+## Крок 74. Рішення: демо drift detection пропускаємо; README — розділ «Мережа» (4.8, 4.9 ✅) (2026-11-01)
+
+**Рішення (моє): drift detection — варіант В, пропустити демо.** Завдання M1 цього не вимагають; контрольне питання 9 вимагає **пояснити** change set і drift detection — пояснення є в `architecture-uk.md`, розділ 11, і кроці 73. Change set ми зробили на практиці (кроки 68–71). У `tasks.md` 4.8 переформульовано: «демо пропущено за рішенням; теорія задокументована».
+
+**README.md:** статус M1 → `in progress`; новий розділ **«M1 — мережа `kv-network`»**:
+- що це, посилання на шаблон, ADR-002/003, діаграми; таблиця підмереж; вартість $0;
+- **Як підняти** — Start Lab → ключі в `lab-credentials.ini` → `lab-login.sh` → `validate-template` → change set (create → describe → execute → wait);
+- **Як перевірити** — статус стека, route tables, підмережі, типи ресурсів, експорти;
+- **Як знести** — `delete-stack` + `wait`; спершу стеки M2, якщо імпортують експорти.
+
+**Перевірка 4.9 («команди з README запускаються як написано»):** блок «Як перевірити» витягнуто з README у скрипт і запущено через `bash` → усі команди відпрацювали: `CREATE_COMPLETE`; public-rt з `0.0.0.0/0 → igw-079c…`, private-rt і main лише `local`, main без прив'язок; 6 підмереж за схемою, `MapPublicIpOnLaunch = False`; 18 ресурсів 7 типів; 10 експортів ✅.
+
+**Група 4 (мережа) — повністю ✅.**
+
+## Крок 75. Експорти і `!ImportValue` — на наших реальних ID (2026-11-01)
+
+**Що вже є в акаунті:** «дошка оголошень» (`aws cloudformation list-exports`) з 10 записами, напр.:
+```
+kv-network-VpcId            = vpc-0762773ace736d258
+kv-network-PrivateSubnetAId = subnet-0df9d89d97cbfb757
+```
+**У M2 шаблон сервісу має сказати «постав мене в нашу VPC, у приватну підмережу AZ-1».** Два способи:
+```yaml
+# ❌ Вписати руками (hardcode)
+SubnetId: subnet-0df9d89d97cbfb757
+
+# ✅ Взяти з дошки за назвою
+SubnetId: !ImportValue kv-network-PrivateSubnetAId
+```
+**Чому другий кращий — сценарій завдання 8:** зносимо мережу і піднімаємо знову → AWS дає **нові** ID (напр., `subnet-0aaa…` замість `subnet-0df9…`).
+- з hardcode: шаблон M2 вказує на `subnet-0df9…`, якої **вже нема** → деплой M2 падає, треба руками шукати й переписувати ID у кожному шаблоні;
+- з `!ImportValue`: мережа сама оновила запис на дошці (`kv-network-PrivateSubnetAId = subnet-0aaa…`) → M2 при деплої бере **новий** ID автоматично.
+**Плюс захист:** поки стек M2 користується записом, CloudFormation **не дасть** видалити мережу (бо зламався б M2) → видаляти у зворотному порядку.
+**Аналогія:** контакт «Мама» в телефоні замість номера; мама змінила номер — оновили контакт, а ти дзвониш так само.
+
+## Крок 76. Як ми перевіряли мережу — і чого ще НЕ перевірили (чесно) (2026-11-01)
+
+### Що перевірено (рівень **налаштувань**)
+| Перевірка | Чим | Що доводить |
+|---|---|---|
+| Шаблон синтаксично правильний | `validate-template` після кожної частини | CloudFormation розуміє шаблон |
+| Створиться саме те, що описано | change set: 18 × `Add` | нічого зайвого/платного |
+| Усе створилось | `wait stack-create-complete` → `CREATE_COMPLETE`; `list-stack-resources` — 18 × `CREATE_COMPLETE` | жоден ресурс не впав |
+| Публічні мають дорогу в інтернет | `describe-route-tables`: `0.0.0.0/0 → igw-…`, `active` | маршрут є і працює з боку AWS |
+| Приватні — без дороги назовні; main безпечна | `describe-route-tables`: лише `local`; main без прив'язок | маршруту в інтернет нема |
+| Адреси, AZ, публічні IP | `describe-subnets` | схема ADR-003, `MapPublicIpOnLaunch = False` |
+| Нема платних ресурсів | `list-stack-resources` — 7 типів, без NAT/Endpoint | вартість $0 |
+| Експорти для M2 | `list-exports` — 10 | M2 зможе імпортувати |
+| README не бреше | блок «Як перевірити» запущено як є | команди робочі |
+
+### Що НЕ перевірено (рівень **поведінки**)
+Ми бачили **правила** (маршрути), але **не пускали справжній трафік**. Не перевірено на ділі:
+- що сервер у публічній підмережі **справді** виходить в інтернет;
+- що сервер у приватній **справді не** виходить;
+- що з інтернету **справді не** дістатися до приватного;
+- що публічна й приватна **справді** бачать одна одну.
+Сценарії spec написані на рівні налаштувань (наприклад, «у route table є `0.0.0.0/0 → igw-…`») — **їм** мережа відповідає. Але «маршрут є» ≠ «пакет пройшов»: трафік ще залежить від security groups, network ACL, публічної IP.
+Також ще попереду: **відтворюваність** (завдання 8) — spec «Відтворюваність з IaC».
+
+### Як можна перевірити поведінку (варіанти)
+- **А. Лишити рівень налаштувань** — spec виконано; $0.
+- **Б. Живий тест двома серверами** (тимчасовий окремий стек): `t3.micro` у public-a (з публічною IP) і `t3.micro` у private-a. SSH з Mac на публічний (ключ `vockey`) → `curl` в інтернет ✅ очікуємо; ping на приватний ✅; з приватного `curl` в інтернет ❌ очікуємо. Потім стек видалити. ≈ кілька центів за годину (2 × t3.micro + 1 публічна IPv4), займає 2 з 9 дозволених EC2. Це те саме демо, що в лекції 3.2, слайд 10 («підключитися до інстанса в паблік сабнет і пропінгувати приватний»).
+- **В. VPC Reachability Analyzer** — AWS аналізує шлях пакета без серверів; платний (≈ $0.10 за аналіз), і чи дозволений у пісочниці — невідомо (нема в Readme).
+
+## Крок 77. Рішення: живий тест мережі не робимо (2026-11-01)
+
+**Рішення (моє): варіант А** — поведінку мережі живим трафіком у M1 не тестуємо. Завдання вимагає **створити** мережу з публічними (IGW) і приватними (лише внутрішній доступ) підмережами — створено й перевірено на рівні налаштувань; контрольне питання 6 вимагає **пояснити**. Аргументи на захисті: у приватних route tables лише `local`; `MapPublicIpOnLaunch = False`; main route table без прив'язок і без IGW. Живий трафік природно перевіриться в **M2**, коли в мережу стануть сервіси. Записано в `tasks.md` (Workflow follow-up).
