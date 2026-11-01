@@ -17,6 +17,68 @@ Capstone project for KSE SE470 Cloud Architectures (2026/27): a "light" serverle
 | M4 | Monitoring, conflict resolution, MCP server | not started |
 | M5 | Autoscaling, rebalancing, ops agent, final benchmark | not started |
 
+## M1 — коротко
+
+**Що це:** фундамент для сховища — розбір прав пісочниці, мережа як код, доступ «лише на перегляд» як код, квоти й бюджет для M2, доказ відтворюваності. Самого kv-сховища ще нема (воно — у M2).
+
+### Швидкий старт (на початку кожної сесії)
+
+```bash
+./scripts/lab-login.sh          # ключі нової сесії → профіль kse-lab
+./scripts/recreate-network.sh   # підняти мережу з IaC (+ 9 перевірок), ≈ 100 с
+./scripts/check-iam-readonly.sh # перевірити read-only політику симулятором (33 перевірки)
+python3 scripts/m2_budget.py    # перерахувати бюджет M2 з публічних прайсів AWS
+```
+
+Ресурси пісочниці **видаляються в кінці кожної сесії** — тому мережу піднімаємо щоразу (див. [розбір ролі](docs/m1/role-dissection.md), розділ 6a).
+
+### Що здаємо за завданнями
+
+| # | Завдання | Результат | Де |
+|---|---|---|---|
+| 1 | Розібрати роль пісочниці | роль `voclabs` = `ReadOnlyAccess` + `Pvoclabs` + SCP; що дозволено / заборонено / як з'ясували | [`docs/m1/role-dissection.md`](docs/m1/role-dissection.md) |
+| 2 | Політика «лише перегляд» як IaC | `kv-readonly`: Allow перегляд, explicit Deny дані й секрети; симулятор 33/33 | [`infra/iam-readonly.yaml`](infra/iam-readonly.yaml), [`docs/m1/iam-readonly.md`](docs/m1/iam-readonly.md) |
+| 3 | Роль з цією політикою для іншого principal | роль для аудитора з іншого акаунта з MFA; чому пісочниця відмовляє | там само |
+| 4 | Мережа: публічні й приватні підмережі | VPC `10.0.0.0/16`, 3 AZ, 6 підмереж, IGW лише для публічних | [`infra/network.yaml`](infra/network.yaml) |
+| 5 | IaC-стек мережі | стек `kv-network` (CloudFormation), 18 ресурсів, 10 експортів | розділ «M1 — мережа» нижче |
+| 6 | Квоти для M2 | квоти AWS із запасом; обмежують правила пісочниці (≤ 9 EC2) і бюджет | [`docs/m1/quotas.md`](docs/m1/quotas.md) |
+| 7 | Бюджет M2 vs $20 | 4 варіанти; 24/7 — понад $20, у сесіях — $2.7–5.4 | [`docs/m1/budget-m2.md`](docs/m1/budget-m2.md) |
+| 8 | Знести й підняти з IaC | 100 с (32 + 68), 9/9 перевірок; що зламалося | [`docs/m1/recreatability.md`](docs/m1/recreatability.md) |
+
+### Рішення (ADR) і специфікація
+
+- [ADR-001](docs/adr/0001-iac-tool-cloudformation.md) — IaC-інструмент: CloudFormation
+- [ADR-002](docs/adr/0002-stack-layout.md) — структура стеків: мережа окремо від IAM і застосунку
+- [ADR-003](docs/adr/0003-cidr-addressing.md) — CIDR-схема і 3 AZ
+- [ADR-004](docs/adr/0004-readonly-access-design.md) — дизайн read-only доступу
+- OpenSpec-зміна (написана **до коду**): [`openspec/changes/add-m1-infrastructure/`](openspec/changes/add-m1-infrastructure/) — proposal, specs (`network`, `iam-readonly-access`), design, tasks
+- Діаграми: [`docs/m1/architecture-uk.md`](docs/m1/architecture-uk.md); журнал кожного кроку: [`docs/m1/journal-uk.md`](docs/m1/journal-uk.md)
+
+### Що змінилось (порівняно з попереднім майлстоуном)
+
+M1 — перший майлстоун, тому все нове:
+
+| Що | Файли |
+|---|---|
+| IaC мережі і доступу | `infra/network.yaml`, `infra/iam-readonly.yaml` |
+| Скрипти | `scripts/lab-login.sh`, `scripts/recreate-network.sh`, `scripts/check-iam-readonly.sh`, `scripts/m2_budget.py` |
+| Рішення і план | `docs/adr/0001…0004`, `openspec/` (зміна `add-m1-infrastructure`) |
+| Документи M1 | `docs/m1/*.md` (розбір ролі, IAM, квоти, бюджет, відтворюваність, діаграми, журнал) |
+| В AWS (на час сесії) | стек `kv-network`; IAM-ресурси не створюються (пісочниця забороняє) |
+
+## M1 — розбір ролі пісочниці (завдання 1)
+
+Ми працюємо як **сесія ролі `voclabs`** (`LabRole` в акаунті нема). Права = `ReadOnlyAccess` (AWS, лише Allow) + `Pvoclabs` (Academy, Allow + explicit Deny; текст прихований) + **SCP** організації AWS Academy. Можна: читати майже все; створювати VPC, CloudFormation, EC2 (≤ 9, `t2/t3` до `medium`), Lambda, DynamoDB, S3; «вдягати» готові ролі `lambda-run-role`, `myBasicLambdaRole`, `myS3Role`. Не можна: створювати IAM, API Gateway, SQS, Organizations, Pricing API. Як з'ясували: Readme, CLI (`sts get-caller-identity`, `iam list-*`), policy simulator, проби з `--dry-run`, текст помилок, CloudTrail.
+
+```bash
+aws sts get-caller-identity --profile kse-lab
+aws iam list-attached-role-policies --role-name voclabs --profile kse-lab
+aws iam simulate-principal-policy --policy-source-arn arn:aws:iam::<ACCOUNT>:role/voclabs \
+  --action-names ec2:CreateVpc iam:CreateRole --profile kse-lab
+```
+
+Детально: [`docs/m1/role-dissection.md`](docs/m1/role-dissection.md).
+
 ## Куди рухаємось: форма системи в M2
 
 M1 готує фундамент для M2, де з'являється саме kv-сховище:
