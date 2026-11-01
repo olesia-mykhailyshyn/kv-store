@@ -218,3 +218,18 @@ aws service-quotas list-service-quotas --service-code <ec2|lambda|dynamodb|elast
 ```bash
 python3 scripts/m2_budget.py   # перерахувати (без ключів AWS, нічого не створює)
 ```
+
+## M1 — відтворюваність (завдання 8)
+
+Усю мережу можна знести і підняти **лише з IaC** однією командою: [`scripts/recreate-network.sh`](scripts/recreate-network.sh) (знести, якщо є → `aws cloudformation deploy` → 9 автоматичних перевірок за spec → час). Детально: [`docs/m1/recreatability.md`](docs/m1/recreatability.md).
+
+| Запуск (2026-11-01) | Знести | Підняти | Разом | Перевірки |
+|---|---|---|---|---|
+| Після очищення платформою (стека нема) | 0 с | 68 с | 68 с | 9/9 ✅ |
+| Повний цикл: знести → підняти | 32 с | 68 с | **100 с** | 9/9 ✅ |
+
+Що зламалося з першої спроби: у перестворенні — нічого; довкола — платформа видаляє стеки в кінці сесії (виявлено через CloudTrail), пастки zsh у командах (тому скрипти на bash). ID ресурсів після кожного перестворення нові → M2 бере їх через експорти `kv-network-…`.
+
+```bash
+./scripts/lab-login.sh && ./scripts/recreate-network.sh   # на початку кожної сесії
+```
