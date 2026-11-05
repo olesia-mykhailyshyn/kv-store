@@ -1,0 +1,496 @@
+openapi: 3.1.0
+info:
+  title: kv-store API
+  version: 0.2.0
+  summary: Light DynamoDB-like key-value store (KSE SE470 capstone, M2)
+  description: |
+    Public API of the coordinator and internal API of the shards.
+
+    Data model (ADR-007):
+    - A table has a name, a partition key attribute name and an optional sort key attribute name.
+    - An item is identified by its partition key (PK) value and, for tables with a sort key,
+      its sort key (SK) value. Both are strings. `value` is any JSON object.
+    - The coordinator picks the shard by hashing `"{table}#{pk}"` (ADR-006); the SK only orders
+      items inside one PK. SK values are compared as strings (lexicographic order), so dates
+      should use ISO 8601 (`2026-11-05`).
+
+    Path shape depends on the table:
+    - table without a sort key: item address is `/tables/{table}/items/{pk}`;
+    - table with a sort key: item address is `/tables/{table}/items/{pk}/{sk}`, and
+      `GET /tables/{table}/items/{pk}` is a Query over that PK.
+    Using the other shape returns `400`.
+
+    Path parameters are URL-encoded. Every `4xx`/`5xx` response (except `HEAD`) has an `Error` body.
+servers:
+  - url: http://{host}:8080
+    variables:
+      host:
+        default: localhost
+        description: Coordinator private IP (from the client EC2 inside the VPC) or a shard for internal calls
+tags:
+  - name: tables
+    description: Table definitions
+  - name: items
+    description: CRUD over items and Query
+  - name: shards
+    description: Shard registration (shard → coordinator)
+  - name: health
+    description: Liveness for smoke tests
+  - name: internal
+    description: Coordinator → shard. Not for clients; reachable only from the coordinator security group.
+
+paths:
+  /tables:
+    post:
+      tags: [tables]
+      operationId: createTable
+      summary: Register a table definition
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TableDefinition' }
+            example: { name: orders, partitionKey: userId, sortKey: orderDate }
+      responses:
+        '201':
+          description: Table created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TableDefinition' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /tables/{table}:
+    parameters:
+      - $ref: '#/components/parameters/Table'
+    get:
+      tags: [tables]
+      operationId: describeTable
+      summary: Read a table definition
+      responses:
+        '200':
+          description: Table definition
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TableDefinition' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /tables/{table}/items:
+    parameters:
+      - $ref: '#/components/parameters/Table'
+    put:
+      tags: [items]
+      operationId: putItem
+      summary: CREATE — put an item (replaces an item with the same key)
+      description: |
+        The body holds the key attributes named in the table definition (string values)
+        and `value`. `201` means the item is durably stored on its shard (written to the WAL and fsynced).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PutItemRequest' }
+            example: { userId: '42', orderDate: '2026-11-05', value: { total: 300, status: paid } }
+      responses:
+        '201':
+          description: Item stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Item' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ShardUnavailable' }
+
+  /tables/{table}/items/{pk}:
+    parameters:
+      - $ref: '#/components/parameters/Table'
+      - $ref: '#/components/parameters/PartitionKey'
+    get:
+      tags: [items]
+      operationId: getItemOrQuery
+      summary: READ (table without sort key) or Query by PK (table with sort key)
+      description: |
+        Table without a sort key: returns the item (`Item`) or `404`.
+        Table with a sort key: returns all items of this PK ordered by SK ascending (`QueryResult`),
+        optionally limited by `skFrom` / `skTo` (both inclusive). No items → empty list, not `404`.
+      parameters:
+        - $ref: '#/components/parameters/SkFrom'
+        - $ref: '#/components/parameters/SkTo'
+      responses:
+        '200':
+          description: Item or query result
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Item'
+                  - $ref: '#/components/schemas/QueryResult'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ShardUnavailable' }
+    head:
+      tags: [items]
+      operationId: itemExistsByPk
+      summary: EXISTS (table without sort key)
+      responses:
+        '200': { description: Item exists (no body) }
+        '400': { description: 'Table has a sort key — use the address with {sk}' }
+        '404': { description: No such item or table (no body) }
+        '503': { description: Shard unavailable (no body) }
+    delete:
+      tags: [items]
+      operationId: deleteItemByPk
+      summary: DELETE (table without sort key)
+      responses:
+        '204': { description: Item deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ShardUnavailable' }
+
+  /tables/{table}/items/{pk}/{sk}:
+    parameters:
+      - $ref: '#/components/parameters/Table'
+      - $ref: '#/components/parameters/PartitionKey'
+      - $ref: '#/components/parameters/SortKey'
+    get:
+      tags: [items]
+      operationId: getItem
+      summary: READ (table with sort key)
+      responses:
+        '200':
+          description: Item
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Item' }
+              example: { key: { userId: '42', orderDate: '2026-11-05' }, value: { total: 300, status: paid } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ShardUnavailable' }
+    head:
+      tags: [items]
+      operationId: itemExists
+      summary: EXISTS (table with sort key)
+      responses:
+        '200': { description: Item exists (no body) }
+        '400': { description: 'Table has no sort key — use the address without {sk}' }
+        '404': { description: No such item or table (no body) }
+        '503': { description: Shard unavailable (no body) }
+    delete:
+      tags: [items]
+      operationId: deleteItem
+      summary: DELETE (table with sort key)
+      responses:
+        '204': { description: Item deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ShardUnavailable' }
+
+  /shards/register:
+    post:
+      tags: [shards]
+      operationId: registerShard
+      summary: Shard registration and heartbeat (every 5 s)
+      description: |
+        A new `id` is added to the ring (500 virtual nodes, ADR-006). A known `id` with a new `url`
+        only updates the address: ring positions depend on `id`, not on the address (ADR-009).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShardRegistration' }
+            example: { id: shard-1, url: 'http://10.0.11.25:8080' }
+      responses:
+        '200':
+          description: Registered (new shard or heartbeat)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShardRegistrationResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /health:
+    get:
+      tags: [health]
+      operationId: health
+      summary: Liveness of a coordinator or a shard
+      responses:
+        '200':
+          description: Process is up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  /internal/items:
+    parameters:
+      - $ref: '#/components/parameters/InternalTable'
+      - $ref: '#/components/parameters/InternalPk'
+      - $ref: '#/components/parameters/InternalSk'
+    put:
+      tags: [internal]
+      operationId: internalPutItem
+      summary: Store an item on this shard
+      description: Query parameters are ignored for PUT; the key is in the body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InternalItem' }
+      responses:
+        '201':
+          description: Written to the WAL, fsynced, applied in memory
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InternalItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+    get:
+      tags: [internal]
+      operationId: internalGetItem
+      summary: Read an item from this shard
+      responses:
+        '200':
+          description: Item
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InternalItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    head:
+      tags: [internal]
+      operationId: internalItemExists
+      summary: Check an item on this shard
+      responses:
+        '200': { description: Item exists (no body) }
+        '404': { description: No such item (no body) }
+    delete:
+      tags: [internal]
+      operationId: internalDeleteItem
+      summary: Delete an item on this shard
+      responses:
+        '204': { description: Deleted (written to the WAL and fsynced) }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /internal/query:
+    get:
+      tags: [internal]
+      operationId: internalQuery
+      summary: Items of one (table, pk) on this shard, ordered by SK
+      parameters:
+        - $ref: '#/components/parameters/InternalTable'
+        - $ref: '#/components/parameters/InternalPk'
+        - $ref: '#/components/parameters/SkFrom'
+        - $ref: '#/components/parameters/SkTo'
+      responses:
+        '200':
+          description: Ordered items (possibly empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/InternalItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+components:
+  parameters:
+    Table:
+      name: table
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/TableName' }
+    PartitionKey:
+      name: pk
+      in: path
+      required: true
+      description: Partition key value (URL-encoded)
+      schema: { $ref: '#/components/schemas/KeyValue' }
+    SortKey:
+      name: sk
+      in: path
+      required: true
+      description: Sort key value (URL-encoded)
+      schema: { $ref: '#/components/schemas/KeyValue' }
+    SkFrom:
+      name: skFrom
+      in: query
+      required: false
+      description: Lower bound of the sort key, inclusive
+      schema: { $ref: '#/components/schemas/KeyValue' }
+    SkTo:
+      name: skTo
+      in: query
+      required: false
+      description: Upper bound of the sort key, inclusive
+      schema: { $ref: '#/components/schemas/KeyValue' }
+    InternalTable:
+      name: table
+      in: query
+      required: true
+      schema: { $ref: '#/components/schemas/TableName' }
+    InternalPk:
+      name: pk
+      in: query
+      required: true
+      schema: { $ref: '#/components/schemas/KeyValue' }
+    InternalSk:
+      name: sk
+      in: query
+      required: false
+      description: Omitted for tables without a sort key
+      schema: { $ref: '#/components/schemas/KeyValue' }
+
+  schemas:
+    TableName:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{1,64}$'
+      description: No `#` allowed — it separates table and PK on the ring (ADR-007)
+    AttributeName:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{1,64}$'
+      not: { const: value }
+      description: Key attribute name; `value` is reserved
+    KeyValue:
+      type: string
+      minLength: 1
+      maxLength: 1024
+    TableDefinition:
+      type: object
+      required: [name, partitionKey]
+      additionalProperties: false
+      properties:
+        name: { $ref: '#/components/schemas/TableName' }
+        partitionKey: { $ref: '#/components/schemas/AttributeName' }
+        sortKey: { $ref: '#/components/schemas/AttributeName' }
+    PutItemRequest:
+      type: object
+      description: |
+        Key attributes of the table (string values) plus `value`. Exactly the key attributes
+        of the table definition are required; other attributes are rejected with `400`.
+        Whole body ≤ 64 KiB, otherwise `413`.
+      required: [value]
+      properties:
+        value: { type: object }
+      additionalProperties: { $ref: '#/components/schemas/KeyValue' }
+    Item:
+      type: object
+      required: [key, value]
+      additionalProperties: false
+      properties:
+        key:
+          type: object
+          description: Key attribute name → value, e.g. `{"userId":"42","orderDate":"2026-11-05"}`
+          additionalProperties: { $ref: '#/components/schemas/KeyValue' }
+        value: { type: object }
+    QueryResult:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          description: Ordered by sort key ascending
+          items: { $ref: '#/components/schemas/Item' }
+    InternalItem:
+      type: object
+      required: [table, pk, sk, value]
+      additionalProperties: false
+      properties:
+        table: { $ref: '#/components/schemas/TableName' }
+        pk: { $ref: '#/components/schemas/KeyValue' }
+        sk:
+          description: '`null` for tables without a sort key'
+          oneOf:
+            - $ref: '#/components/schemas/KeyValue'
+            - type: 'null'
+        value: { type: object }
+    ShardRegistration:
+      type: object
+      required: [id, url]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{1,64}$'
+          description: Stable shard id from IaC (`shard-1`), not the IP
+        url:
+          type: string
+          format: uri
+          description: Base URL of the shard internal API
+    ShardRegistrationResult:
+      type: object
+      required: [id, newShard, shards]
+      additionalProperties: false
+      properties:
+        id: { type: string }
+        newShard:
+          type: boolean
+          description: true if this id was added to the ring by this call
+        shards:
+          type: integer
+          description: Number of shards on the ring
+    Health:
+      type: object
+      required: [status, role]
+      properties:
+        status: { const: ok }
+        role: { enum: [coordinator, shard] }
+        mode:
+          enum: [single, sharded]
+          description: Coordinator only
+        id:
+          type: string
+          description: Shard only
+        items:
+          type: integer
+          description: Shard (or single-node coordinator) — number of items in memory
+        shards:
+          type: array
+          description: Coordinator only — registered shards
+          items:
+            type: object
+            required: [id, url, lastSeenSeconds]
+            properties:
+              id: { type: string }
+              url: { type: string }
+              lastSeenSeconds: { type: number }
+    Error:
+      type: object
+      required: [error, message]
+      additionalProperties: false
+      properties:
+        error:
+          enum: [bad_request, not_found, conflict, payload_too_large, shard_unavailable, internal]
+        message: { type: string }
+
+  responses:
+    BadRequest:
+      description: Invalid input (bad JSON, missing or extra key attribute, wrong path shape)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: bad_request, message: 'missing sort key attribute orderDate' }
+    NotFound:
+      description: Table or item does not exist
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: not_found, message: 'item not found' }
+    Conflict:
+      description: Table already exists
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PayloadTooLarge:
+      description: Body larger than 64 KiB
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ShardUnavailable:
+      description: The shard that owns the key did not answer (connection error or 2 s timeout)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: shard_unavailable, message: 'shard-2 unavailable' }
