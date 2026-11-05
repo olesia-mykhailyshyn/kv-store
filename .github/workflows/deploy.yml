@@ -1,0 +1,117 @@
+# CD (ADR-010, design decisions 7-9): one button deploys infrastructure and app.
+#   1. kv-network   - cloudformation deploy; no template change -> "No changes", network untouched
+#   2. kv-artifacts - code bucket + results bucket
+#   3. code archive -> s3://<code bucket>/code/<git sha>.zip
+#   4. kv-app       - deleted and created again with CodeVersion = git sha (decision 8)
+# The kv-app create succeeds only after the client's smoke test sends a successful
+# cfn-signal (CreationPolicy, decision 9), so a green run means the store answers.
+# Run manually ("Run workflow") after ./scripts/push-lab-secrets.sh at the start of a session.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      admin_cidr:
+        description: "CIDR allowed to SSH to the client EC2, e.g. 203.0.113.7/32"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One deploy at a time: two runs would delete/create kv-app over each other.
+# A second run waits for the first instead of cancelling it half-way.
+concurrency:
+  group: deploy-sandbox
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Session keys of the sandbox live only in GitHub Secrets (no OIDC in the sandbox, ADR-010).
+      # The action exports them as environment variables for later steps; GitHub masks
+      # secret values in the log (shown as ***). Pinned to a full commit SHA because this
+      # step receives the keys: a moved tag could not swap in other code.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Who am I (account and role, no keys)
+        run: aws sts get-caller-identity --query '[Account, Arn]' --output text
+
+      - name: Deploy kv-network
+        run: |
+          aws cloudformation deploy \
+            --stack-name kv-network \
+            --template-file infra/network.yaml \
+            --no-fail-on-empty-changeset
+
+      - name: Deploy kv-artifacts
+        run: |
+          aws cloudformation deploy \
+            --stack-name kv-artifacts \
+            --template-file infra/artifacts.yaml \
+            --no-fail-on-empty-changeset
+
+      - name: Upload code archive
+        env:
+          CODE_VERSION: ${{ github.sha }}
+        run: |
+          bucket="$(aws cloudformation list-exports \
+            --query "Exports[?Name=='kv-artifacts-CodeBucket'].Value" --output text)"
+          if [ -z "$bucket" ] || [ "$bucket" = "None" ]; then
+            echo "Export kv-artifacts-CodeBucket not found" >&2
+            exit 1
+          fi
+          # Top level of the zip is the package dir kvstore/ (unzipped to /opt/kvstore on servers).
+          mkdir -p build
+          (cd src && zip -q -r ../build/code.zip kvstore -x '*__pycache__*' '*.pyc')
+          aws s3 cp build/code.zip "s3://$bucket/code/$CODE_VERSION.zip"
+
+      # Replace, not update: a changed user data does not rerun on an existing EC2 (decision 8).
+      - name: Delete old kv-app
+        run: |
+          if aws cloudformation describe-stacks --stack-name kv-app > /dev/null 2>&1; then
+            echo "kv-app exists, deleting"
+            aws cloudformation delete-stack --stack-name kv-app
+            aws cloudformation wait stack-delete-complete --stack-name kv-app
+          else
+            echo "kv-app does not exist"
+          fi
+
+      # deploy waits until the stack is CREATE_COMPLETE, which needs the smoke-test signal.
+      - name: Create kv-app (waits for the smoke test)
+        env:
+          CODE_VERSION: ${{ github.sha }}
+          ADMIN_CIDR: ${{ inputs.admin_cidr }}
+        run: |
+          aws cloudformation deploy \
+            --stack-name kv-app \
+            --template-file infra/app.yaml \
+            --parameter-overrides "CodeVersion=$CODE_VERSION" "AdminCidr=$ADMIN_CIDR"
+
+      - name: Stack outputs
+        run: |
+          aws cloudformation describe-stacks --stack-name kv-app \
+            --query 'Stacks[0].Outputs' --output table
+
+      # Only on failure: why kv-app failed (for example the smoke test did not signal).
+      - name: Failed kv-app events
+        if: failure()
+        run: |
+          aws cloudformation describe-stack-events --stack-name kv-app \
+            --query "StackEvents[?contains(ResourceStatus, 'FAILED')].[LogicalResourceId, ResourceStatus, ResourceStatusReason]" \
+            --output table || true

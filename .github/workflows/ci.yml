@@ -1,0 +1,44 @@
+# CI (ADR-010, design decision 10): every push and pull request runs the checks
+# without AWS: tests, OpenAPI contract validation, CloudFormation lint.
+# Any failing step makes the run red (spec delivery-pipeline).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Least privilege: the job only reads the repository.
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned to a full commit SHA: a tag can be moved to other code,
+      # a commit SHA cannot. The comment says which release it is.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Python 3.9 = the version on the Amazon Linux 2023 servers (3.9.25, task 4.1),
+      # so CI catches syntax from newer Python before it reaches a server.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.9"
+
+      # requirements-dev.txt pins pytest and the linters to releases that support Python 3.9
+      # (cfn-lint 1.47+ and openapi-spec-validator 0.8+ need 3.10).
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Validate OpenAPI contract
+        run: openapi-spec-validator api/openapi.yaml
+
+      - name: Lint CloudFormation templates
+        run: cfn-lint infra/*.yaml
