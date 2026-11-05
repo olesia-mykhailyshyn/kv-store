@@ -1,8 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  kv-store M1 network (stack kv-network): VPC 10.0.0.0/16 across 3 AZs,
+  kv-store network (stack kv-network): VPC 10.0.0.0/16 across 3 AZs,
   public subnets routed to an Internet Gateway, private subnets with no route
-  outside the VPC. See docs/adr/0002-stack-layout.md and docs/adr/0003-cidr-addressing.md.
+  outside the VPC except S3 through a free Gateway Endpoint (M2).
+  See docs/adr/0002-stack-layout.md, docs/adr/0003-cidr-addressing.md and
+  docs/adr/0009-entry-point-metadata-registration.md.
 
 Resources:
   Vpc:
@@ -143,7 +145,8 @@ Resources:
       SubnetId: !Ref PublicSubnetC
       RouteTableId: !Ref PublicRouteTable
 
-  # No routes added: only the implicit "10.0.0.0/16 -> local" route exists.
+  # No routes added here: the implicit "10.0.0.0/16 -> local" route, plus the
+  # S3 prefix-list route that S3GatewayEndpoint below adds. No 0.0.0.0/0.
   PrivateRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -169,6 +172,21 @@ Resources:
     Properties:
       SubnetId: !Ref PrivateSubnetC
       RouteTableId: !Ref PrivateRouteTable
+
+  # M2: private servers download the code archive from S3 without internet.
+  # A Gateway endpoint is free (Interface endpoints and NAT are billed hourly).
+  # AWS adds the route "S3 prefix list (pl-...) -> vpce-..." to the private
+  # route table only; the public route table is not changed.
+  # No PolicyDocument: the default policy allows all S3; access is limited by
+  # the instance profile (myS3Role) instead.
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Gateway
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      RouteTableIds:
+        - !Ref PrivateRouteTable
 
 # Exported for M2+ stacks (Fn::ImportValue). Names are prefixed with the stack name.
 Outputs:
