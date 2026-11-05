@@ -29,6 +29,10 @@ context: |
 
   Ухвалені рішення:
   - IaC: AWS CloudFormation, шаблони YAML (docs/adr/0001-iac-tool-cloudformation.md).
+  - M2 (ADR-005…010): REST + JSON, OpenAPI; MD5 + 500 virtual nodes; ключ на кільці
+    table#pk, sort key впорядковує; усе на EC2, Python лише stdlib на серверах;
+    шард = RAM + WAL (fsync на кожен запис); клієнт у VPC; метадані coordinator у WAL,
+    heartbeat шардів; CI на push + CD кнопкою з ключами в GitHub Secrets.
 
   Правила роботи:
   - Spec before code: OpenSpec proposal і ADR пишуться ДО коду.
