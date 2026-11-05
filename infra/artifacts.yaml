@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  kv-store M2 artifacts (stack kv-artifacts): S3 bucket for code archives
+  (code/<git-sha>.zip) and S3 bucket for YCSB results (versioned). A separate
+  stack because the code bucket must exist and hold the archive before the
+  servers of kv-app start. See openspec/changes/add-m2-sharding/design.md
+  (decisions 7-8) and docs/adr/0010-ci-cd-in-sandbox.md.
+
+# Deletion choice: both buckets are Retain.
+# CloudFormation cannot delete a bucket that still has objects, and the sandbox
+# deletes stacks at the end of a session. With Delete the stack would end in
+# DELETE_FAILED; with Retain the stack is removed and the bucket is simply left
+# behind. No BucketName is set, so CloudFormation generates a unique name and a
+# retained bucket never blocks the next session's kv-artifacts stack.
+# Manual cleanup (only if the account is not wiped by the sandbox):
+#   aws s3 rb s3://<bucket> --force            # code bucket
+#   results bucket is versioned: delete all object versions first
+#   (S3 console "Empty", or aws s3api delete-objects with the version list).
+
+Resources:
+  CodeBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      # Encrypt objects at rest with S3-managed keys (SSE-S3, no KMS cost).
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      # Nothing in this bucket is ever public.
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      # ACLs off: access is decided only by IAM (myS3Role) and bucket policies.
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-code
+
+  ResultsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      # Versioning: a re-run of YCSB never silently overwrites earlier results.
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-results
+
+# Exported for kv-app (Fn::ImportValue) and for the CD workflow.
+Outputs:
+  CodeBucket:
+    Description: Bucket name for code archives (key code/<CodeVersion>.zip)
+    Value: !Ref CodeBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-CodeBucket
+
+  ResultsBucket:
+    Description: Bucket name for YCSB results (versioning Enabled)
+    Value: !Ref ResultsBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-ResultsBucket
