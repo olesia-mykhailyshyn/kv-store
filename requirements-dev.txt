@@ -1,0 +1,9 @@
+# Development and CI only. Servers run the standard library alone (ADR-008).
+# Versions support Python 3.9, the version on Amazon Linux 2023.
+pytest==8.4.2
+# Integration tests check responses against the schemas in api/openapi.yaml.
+jsonschema==4.23.0
+PyYAML==6.0.2
+# Linters, pinned to the last releases that support Python 3.9 (used by CI)
+cfn-lint==1.46.0
+openapi-spec-validator==0.7.2

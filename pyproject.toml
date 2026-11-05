@@ -1,0 +1,9 @@
+[project]
+name = "kvstore"
+version = "0.2.0"
+description = "Light DynamoDB-like key-value store (KSE SE470 capstone)"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
