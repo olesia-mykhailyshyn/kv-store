@@ -18,7 +18,7 @@
 
 ## 3. Зафіксувати план у git до коду
 
-- [ ] 3.1 `openspec validate add-m2-sharding --strict` проходить; лише з дозволу Олесі — коміт (OpenSpec-зміна, ADR-005…010, `api/openapi.yaml`, експеримент, журнал) і push; перевірка: `git log` показує коміт специфікації раніше за будь-який код у `src/`
+- [x] 3.1 `openspec validate add-m2-sharding --strict` проходить; лише з дозволу Олесі — коміт (OpenSpec-зміна, ADR-005…010, `api/openapi.yaml`, експеримент, журнал) і push; перевірка: `git log` показує коміт специфікації раніше за будь-який код у `src/`
 
 ## 4. Перевірки пісочниці перед кодом
 
@@ -27,30 +27,30 @@
 
 ## 5. Зберігання: RAM + WAL (`shard-storage`)
 
-- [ ] 5.1 Тести `tests/test_storage.py` за сценаріями `shard-storage`: перезапис і видалення переживають перезапуск, обрізаний останній рядок відкидається, пошкоджений рядок посередині — помилка, порядок за SK; перевірка: тести запускаються і падають (коду ще нема)
-- [ ] 5.2 `src/kvstore/storage.py` (write → flush → fsync → RAM; програвання WAL на старті); перевірка: `pytest tests/test_storage.py` зелений
-- [ ] 5.3 Тест «`kill -9` після `201`» на окремому процесі; перевірка: запис читається після перезапуску
+- [x] 5.1 Тести `tests/test_storage.py` за сценаріями `shard-storage`: перезапис і видалення переживають перезапуск, обрізаний останній рядок відкидається, пошкоджений рядок посередині — помилка, порядок за SK; перевірка: тести запускаються і падають (коду ще нема)
+- [x] 5.2 `src/kvstore/storage.py` (write → flush → fsync → RAM; програвання WAL на старті); перевірка: `pytest tests/test_storage.py` зелений
+- [x] 5.3 Тест «`kill -9` після `201`» на окремому процесі; перевірка: запис читається після перезапуску
 
 ## 6. Кільце (`sharding`)
 
-- [ ] 6.1 Тести `tests/test_ring.py`: детермінованість між процесами, баланс 2 шардів у межах 50 ± 5 % на 1 000 000 ключів, при 2→3 переїзд ≤ 1/3 + 5 pp і лише на новий шард, мітки залежать від `id`, не від адреси; перевірка: тести падають
-- [ ] 6.2 `src/kvstore/ring.py` за ADR-006; перевірка: `pytest tests/test_ring.py` зелений
+- [x] 6.1 Тести `tests/test_ring.py`: детермінованість між процесами, баланс 2 шардів у межах 50 ± 5 % на 1 000 000 ключів, при 2→3 переїзд ≤ 1/3 + 5 pp і лише на новий шард, мітки залежать від `id`, не від адреси; перевірка: тести падають
+- [x] 6.2 `src/kvstore/ring.py` за ADR-006; перевірка: `pytest tests/test_ring.py` зелений
 
 ## 7. Coordinator у single-node режимі (`kv-api`, завдання 2)
 
-- [ ] 7.1 Інтеграційні тести `tests/test_api_single.py`: усі сценарії `specs/kv-api` проти процесу coordinator `--mode single` на localhost, перевірка відповідей на схеми з `openapi.yaml`; перевірка: тести падають
-- [ ] 7.2 `src/kvstore/http_common.py` і `src/kvstore/coordinator.py` (single-node): таблиці + метадані в WAL, CRUD, Query, формат помилок; перевірка: `pytest tests/test_api_single.py` зелений
+- [x] 7.1 Інтеграційні тести `tests/test_api_single.py`: усі сценарії `specs/kv-api` проти процесу coordinator `--mode single` на localhost, перевірка відповідей на схеми з `openapi.yaml`; перевірка: тести падають
+- [x] 7.2 `src/kvstore/http_common.py` і `src/kvstore/coordinator.py` (single-node): таблиці + метадані в WAL, CRUD, Query, формат помилок; перевірка: `pytest tests/test_api_single.py` зелений
 - [ ] 7.3 Демо single-node `curl`-ами (створити таблицю, PUT, GET, HEAD, Query, DELETE) у `docs/m2/demo.md`; перевірка: команди з файлу дають описані відповіді
 
 ## 8. Шарди і шардований coordinator (завдання 3–4)
 
-- [ ] 8.1 Тести `tests/test_api_sharded.py`: coordinator `--mode sharded` + 2 процеси шардів на localhost — сценарії `kv-api` проходять, записи одного PK на одному шарді, реєстрація і heartbeat, зміна адреси шарда не змінює розподіл, після перезапуску coordinator кільце відновлюється ≤ 10 с, зупинений шард → `503`; перевірка: тести падають
-- [ ] 8.2 `src/kvstore/shard.py` (внутрішнє API, heartbeat) і маршрутизація в coordinator; перевірка: `pytest` усіх тестів зелений
+- [x] 8.1 Тести `tests/test_api_sharded.py`: coordinator `--mode sharded` + 2 процеси шардів на localhost — сценарії `kv-api` проходять, записи одного PK на одному шарді, реєстрація і heartbeat, зміна адреси шарда не змінює розподіл, після перезапуску coordinator кільце відновлюється ≤ 10 с, зупинений шард → `503`; перевірка: тести падають
+- [x] 8.2 `src/kvstore/shard.py` (внутрішнє API, heartbeat) і маршрутизація в coordinator; перевірка: `pytest` усіх тестів зелений
 - [ ] 8.3 Демо: на якому шарді лежить ключ (логи або `/health` шардів з кількістю записів) — у `docs/m2/demo.md`; перевірка: видно розподіл ключів між шардами
 
 ## 9. Мережа: S3 Gateway Endpoint (`network`)
 
-- [ ] 9.1 Додати Gateway Endpoint S3 у `infra/network.yaml` (приватна route table); перевірка: `aws cloudformation validate-template` і `cfn-lint` без помилок
+- [x] 9.1 Додати Gateway Endpoint S3 у `infra/network.yaml` (приватна route table); перевірка: `aws cloudformation validate-template` і `cfn-lint` без помилок
 - [ ] 9.2 Оновити перевірки `scripts/recreate-network.sh`: дозволити лише Gateway Endpoint S3, приватні маршрути — `local` + prefix list S3; перевірка: скрипт проходить на розгорнутій мережі
 - [ ] 9.3 `aws cloudformation deploy` мережі (change set переглядаємо разом); перевірка: сценарії delta-spec `network` (маршрут `pl-…` через `vpce-…`, нема `0.0.0.0/0` у приватних)
 
@@ -76,7 +76,7 @@
 ## 13. YCSB baseline (`benchmark-baseline`, завдання 7)
 
 - [ ] 13.1 Олеся підтверджує workload (пропозиція design: A + C) і стартові параметри; перевірка: рішення в журналі з обґрунтуванням (контрольне питання 8)
-- [ ] 13.2 Binding: перевірити вбудований REST-binding YCSB; якщо не підходить — мінімальний власний у `bench/ycsb-binding/`; перевірка: `ycsb load` на 1000 записів проходить
+- [x] 13.2 Binding: перевірити вбудований REST-binding YCSB; якщо не підходить — мінімальний власний у `bench/ycsb-binding/`; перевірка: `ycsb load` на 1000 записів проходить
 - [ ] 13.3 `scripts/ycsb-run.sh`: load + run з параметрами з файлу, результат + конфігурація + дата → `docs/m2/ycsb/` і бакет результатів; перевірка: файли є в обох місцях
 - [ ] 13.4 Повний прогін baseline; перевірка: звіт з throughput, avg/p95/p99 для читань і записів, конфігурацією; висновки в `docs/m2/ycsb/README.md`
 
